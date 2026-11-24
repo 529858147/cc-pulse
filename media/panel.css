@@ -1,0 +1,145 @@
+/* Flat "ledger" look: numbers sit directly on the sidebar and are organised by hairlines, not boxes.
+   Only VS Code theme variables are used, so light and dark themes follow automatically. */
+:root {
+  --muted: var(--vscode-descriptionForeground);
+  --line: var(--vscode-panel-border, rgba(128, 128, 128, 0.35));
+  --card: var(--vscode-editorWidget-background, rgba(128, 128, 128, 0.06));
+  --track: var(--vscode-editorWidget-border, rgba(128, 128, 128, 0.25));
+  --hover: var(--vscode-list-hoverBackground, rgba(128, 128, 128, 0.12));
+  --accent: var(--vscode-charts-blue);
+  --warn: var(--vscode-charts-yellow);
+  --alert: var(--vscode-charts-red);
+}
+body { font-family: var(--vscode-font-family); font-size: var(--vscode-font-size); color: var(--vscode-foreground); background: transparent; margin: 0; padding: 0 10px 16px; }
+.tabs { position: sticky; top: 0; z-index: 2; display: flex; padding: 6px 0 0; background: var(--vscode-sideBar-background); border-bottom: 1px solid var(--line); }
+.tabs button { flex: 1; border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--muted); padding: 5px 0 6px; margin-bottom: -1px; cursor: pointer; font-size: 12px; }
+.tabs button:hover { color: var(--vscode-foreground); }
+.tabs button.on { color: var(--vscode-foreground); border-bottom-color: var(--accent); }
+.head { margin: 10px 0; }
+.head .t { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sub, .note { color: var(--muted); font-size: 11px; }
+.note { margin-top: 8px; line-height: 1.5; }
+
+/* summary strip: cells separated by vertical rules */
+.grid3, .grid2 { display: grid; margin-top: 10px; }
+.grid3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.grid2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.card { padding: 6px 0 6px 10px; border-left: 1px solid var(--line); min-width: 0; }
+.grid3 .card:nth-child(3n + 1), .grid2 .card:nth-child(2n + 1) { border-left: 0; padding-left: 0; }
+.grid3 .card:nth-child(n + 4) { border-top: 1px solid var(--line); }
+.grid2 .card:nth-child(n + 3) { border-top: 1px solid var(--line); }
+.card .k { font-size: 11px; color: var(--muted); }
+.card .v { font-size: 17px; font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.card .v small { font-size: 11px; font-weight: normal; color: var(--muted); margin-left: 3px; }
+.card.warn .v { color: var(--warn); }
+.card.alert .v { color: var(--alert); }
+
+section { border-top: 1px solid var(--line); padding: 10px 0 2px; margin-top: 10px; }
+section h3 { margin: 0 0 6px; font-size: 12px; font-weight: 600; display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+section h3 span, section h3 small { font-weight: normal; color: var(--muted); font-size: 11px; }
+.kv { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px 12px; margin-top: 8px; }
+.kv div span { display: block; font-size: 11px; color: var(--muted); }
+.kv div b { font-variant-numeric: tabular-nums; font-weight: 600; }
+.bar { display: flex; height: 6px; border-radius: 3px; background: var(--track); overflow: hidden; margin: 6px 0 2px; }
+.bar i { display: block; height: 100%; }
+.legend { display: flex; flex-wrap: wrap; gap: 4px 10px; font-size: 11px; color: var(--muted); margin-top: 4px; }
+.legend i { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 4px; vertical-align: -1px; }
+svg { display: block; width: 100%; overflow: visible; }
+svg text { font-size: 9px; fill: var(--muted); font-variant-numeric: tabular-nums; }
+svg line.grid { stroke: var(--line); stroke-width: 1; vector-effect: non-scaling-stroke; }
+svg line.grid.dash { stroke-dasharray: 2 3; }
+svg rect.hit { fill: transparent; }
+svg rect.hit:hover { fill: var(--vscode-foreground); fill-opacity: 0.07; }
+.badge { display: inline-block; padding: 0 6px; border-radius: 8px; border: 1px solid var(--line); font-size: 11px; }
+.badge.generating, .badge.tool { border-color: var(--accent); color: var(--accent); }
+.badge.waiting { border-color: var(--vscode-charts-green); color: var(--vscode-charts-green); }
+
+/* tables: hairline rows, right-aligned numbers, first column stays visible while scrolling */
+table { width: 100%; border-collapse: collapse; font-size: 11px; font-variant-numeric: tabular-nums; }
+th { color: var(--muted); font-weight: normal; text-align: right; padding: 4px 6px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+td { text-align: right; padding: 5px 6px; white-space: nowrap; border-bottom: 1px solid var(--line); }
+tr:last-child td { border-bottom: 0; }
+th:first-child, td:first-child { text-align: left; padding-left: 0; }
+.scroll > table th:first-child, .scroll > table td:first-child { position: sticky; left: 0; background: var(--vscode-sideBar-background); }
+td.eff { color: var(--muted); }
+tr.miss td { color: var(--warn); }
+.scroll { overflow-x: auto; }
+.total { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; padding: 6px 8px; margin: 4px 0 6px; background: var(--card); border-radius: 3px; font-size: 11px; font-variant-numeric: tabular-nums; }
+.total b { font-weight: 600; }
+.foot { display: flex; justify-content: space-between; gap: 8px; margin-top: 12px; padding-top: 8px; border-top: 1px solid var(--line); color: var(--muted); font-size: 10px; }
+
+.rank .row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px; font-size: 11px; margin-top: 5px; }
+.rank .row .n { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.rank .row .c { color: var(--muted); font-variant-numeric: tabular-nums; }
+.rank .row .bar { grid-column: 1 / 3; height: 3px; margin: 0; }
+.toolbar { display: flex; gap: 4px; margin: 10px 0 2px; }
+.toolbar input, .toolbar select { min-width: 0; background: var(--vscode-input-background); color: var(--vscode-input-foreground); border: 1px solid var(--vscode-input-border, var(--line)); border-radius: 3px; padding: 3px 6px; font-size: 12px; }
+.toolbar input { flex: 1; }
+button.small { background: transparent; color: var(--muted); border: 1px solid var(--line); border-radius: 3px; padding: 1px 6px; cursor: pointer; font-size: 11px; }
+button.small:hover:not(:disabled) { color: var(--vscode-foreground); }
+
+/* segmented control: one joined strip */
+.seg { display: inline-flex; }
+.seg button { background: transparent; color: var(--muted); border: 1px solid var(--line); margin-left: -1px; padding: 1px 8px; cursor: pointer; font-size: 11px; border-radius: 0; }
+.seg button:first-child { border-radius: 3px 0 0 3px; margin-left: 0; }
+.seg button:last-child { border-radius: 0 3px 3px 0; }
+.seg button:hover { color: var(--vscode-foreground); }
+.seg button.on { color: var(--vscode-foreground); background: var(--hover); border-color: var(--accent); position: relative; }
+
+.sess { border-bottom: 1px solid var(--line); padding: 6px 0; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 8px; font-size: 11px; }
+.sess .t { font-size: 12px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sess .r { text-align: right; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.sess .m { color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.nav { display: flex; align-items: center; gap: 8px; }
+.empty { color: var(--muted); padding: 16px 0; text-align: center; }
+.rangebar { margin: 10px 0 0; display: flex; align-items: center; flex-wrap: wrap; gap: 6px 12px; }
+.srcnote { margin: 4px 0 0; }
+/* prev/next arrows that have nowhere to go keep their space but are not shown */
+.nav button:disabled { visibility: hidden; }
+.charthead { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; }
+.charthead .legend { margin-top: 0; }
+
+/* year calendar: weekday labels stay put while the grid scrolls */
+.calwrap { display: flex; gap: 4px; }
+.calwk { padding-top: 12px; font-size: 9px; color: var(--muted); }
+.calwk span { display: block; height: 12px; line-height: 10px; }
+/* line charts: the hovered point shows its dot, compactions are drawn as vertical lines */
+.pt circle { fill: var(--accent); opacity: 0; pointer-events: none; }
+.pt:hover circle { opacity: 1; }
+svg line.mark { stroke: var(--vscode-charts-orange); stroke-width: 1; stroke-dasharray: 3 2; vector-effect: non-scaling-stroke; }
+svg line.ref { stroke-width: 1; stroke-dasharray: 4 3; vector-effect: non-scaling-stroke; }
+.bar i[data-tip]:hover { filter: brightness(1.25); }
+rect.day { cursor: pointer; }
+rect.day:hover { stroke: var(--muted); stroke-width: 1; }
+rect.day.sel { stroke: var(--vscode-foreground); stroke-width: 1; }
+
+/* hover card with the per-model breakdown */
+#tip { position: fixed; z-index: 10; pointer-events: none; min-width: 150px; max-width: 260px; padding: 8px 10px; font-size: 11px; line-height: 1.5; font-variant-numeric: tabular-nums;
+  color: var(--vscode-editorHoverWidget-foreground, var(--vscode-foreground)); background: var(--vscode-editorHoverWidget-background, var(--vscode-editorWidget-background)); border: 1px solid var(--vscode-editorHoverWidget-border, var(--line)); border-radius: 4px; box-shadow: 0 2px 8px var(--vscode-widget-shadow, rgba(0, 0, 0, 0.3)); }
+#tip[hidden] { display: none; }
+#tip .d { color: var(--muted); }
+#tip .n { font-size: 14px; font-weight: 600; margin: 2px 0; }
+#tip .m { display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto; gap: 2px 8px; margin-top: 6px; align-items: baseline; }
+#tip .m i { width: 8px; height: 8px; border-radius: 2px; align-self: center; }
+#tip .m span:nth-child(4n + 3), #tip .m span:nth-child(4n + 4) { text-align: right; }
+#tip .m span:nth-child(4n + 4) { color: var(--muted); }
+/* request log (editor tab) */
+.logbar { display: flex; align-items: center; gap: 12px; padding: 12px 0 8px; }
+.logbar .logscope { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+table.log { font-size: 12px; }
+table.log th { cursor: pointer; user-select: none; padding: 6px 8px; }
+table.log th:hover { color: var(--vscode-foreground); }
+table.log td { padding: 6px 8px; border-bottom: 1px solid var(--line); }
+table.log td small { color: var(--muted); }
+table.log tr:hover td { background: var(--vscode-list-hoverBackground); }
+.logtools { display: inline-flex; align-items: center; gap: 6px; }
+.pager { display: flex; justify-content: space-between; align-items: center; padding: 10px 0; }
+.pager select { background: var(--vscode-input-background); color: var(--vscode-input-foreground); border: 1px solid var(--vscode-input-border, var(--line)); border-radius: 3px; }
+button.small:disabled { opacity: 0.4; cursor: default; }
+.logrange { margin: 4px 0 6px; }
+.donut { display: inline-block; width: 18px; height: 18px; vertical-align: -3px; margin-right: 6px; transform: rotate(-90deg); }
+.donut circle { fill: none; stroke-width: 4; }
+.donut .bg { stroke: var(--track); }
+.donut .fg { stroke: var(--accent); stroke-linecap: butt; }
+.card.warn .donut .fg { stroke: var(--warn); }
+.card.alert .donut .fg { stroke: var(--alert); }

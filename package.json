@@ -1,0 +1,123 @@
+{
+  "name": "cc-pulse",
+  "displayName": "CC Pulse",
+  "description": "Claude Code 会话仪表盘：速率、Token、缓存倒计时、上下文、全局洞察与历史用量（只读本地会话记录）",
+  "version": "0.8.0",
+  "publisher": "local",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.94.0"
+  },
+  "extensionKind": [
+    "workspace"
+  ],
+  "main": "./extension.js",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "ccPulse",
+          "title": "CC Pulse",
+          "icon": "resources/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "ccPulse": [
+        {
+          "type": "webview",
+          "id": "ccPulse.sidebar",
+          "name": "CC Pulse"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "ccPulse.open",
+        "title": "CC Pulse: 打开侧边栏"
+      },
+      {
+        "command": "ccPulse.openLog",
+        "title": "CC Pulse: 打开请求日志"
+      },
+      {
+        "command": "ccPulse.refresh",
+        "title": "CC Pulse: 重新扫描"
+      },
+      {
+        "command": "ccPulse.pickSession",
+        "title": "CC Pulse: 切换会话"
+      }
+    ],
+    "configuration": {
+      "title": "CC Pulse",
+      "properties": {
+        "ccPulse.timeZone": {
+          "type": "string",
+          "default": "",
+          "description": "划分“今日 / 本周 / 本月”所用的时区（IANA 名称，如 Asia/Singapore）。留空使用扩展所在机器的系统时区。"
+        },
+        "ccPulse.contextWindows": {
+          "type": "object",
+          "default": {
+            "claude-opus-5": 1000000,
+            "default": 200000
+          },
+          "description": "上下文窗口大小（tokens），按模型 ID 前缀匹配，default 为兜底值。会话里出现超过该值的请求时按 1M 计算。"
+        },
+        "ccPulse.contextWarn": {
+          "type": "number",
+          "default": 0.7,
+          "minimum": 0,
+          "maximum": 1,
+          "description": "上下文占用达到该比例时状态栏变黄。"
+        },
+        "ccPulse.contextAlert": {
+          "type": "number",
+          "default": 0.85,
+          "minimum": 0,
+          "maximum": 1,
+          "description": "上下文占用达到该比例时状态栏变红。"
+        },
+        "ccPulse.cacheWarnMinutes": {
+          "type": "number",
+          "default": 10,
+          "minimum": 0,
+          "description": "提示缓存剩余不超过这么多分钟时状态栏变黄。"
+        },
+        "ccPulse.projectRoots": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "这些目录下的每个一级子目录各算一个项目（用于“项目分布”）。不在其中的会话按启动目录归类。"
+        },
+        "ccPulse.pollIntervalMs": {
+          "type": "number",
+          "default": 2000,
+          "minimum": 500,
+          "description": "检查会话记录的间隔（毫秒）。"
+        },
+        "ccPulse.showToday": {
+          "type": "boolean",
+          "default": true,
+          "description": "在状态栏显示今日用量（全部会话的 Token 和估算费用）。"
+        },
+        "ccPulse.notifyContext": {
+          "type": "boolean",
+          "default": false,
+          "description": "上下文占用达到 contextAlert 时弹出一次提醒（压缩回到 contextWarn 以下后可再次提醒）。"
+        },
+        "ccPulse.notifyCache": {
+          "type": "boolean",
+          "default": false,
+          "description": "提示缓存剩余不到 1 分钟时弹出一次提醒（仅在轮到你回复时）。"
+        }
+      }
+    }
+  }
+}
