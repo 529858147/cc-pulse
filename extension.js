@@ -78,6 +78,7 @@ class Pulse {
     this.flash = null;
     this.range = 'all'; // date range of the 全局洞察 tab, chosen in the panel
     this.pinned = context.workspaceState.get('pinned') || null; // session file the status bar is fixed to, or null to follow the newest
+    this.viewing = null; // session of the conversation tab that is active in the editor, or null
     this.usage = null; // today / this week over every session
     this.notified = { ctx: new Set(), cache: new Map() }; // what has already been announced, so each is shown once
     this.fileErrors = new Set();
@@ -105,6 +106,8 @@ class Pulse {
       vscode.commands.registerCommand('ccPulse.refresh', () => this.fullRescan()),
       vscode.commands.registerCommand('ccPulse.openLog', () => this.openLog()),
       vscode.commands.registerCommand('ccPulse.pickSession', () => this.pickSession()),
+      vscode.window.tabGroups.onDidChangeTabs(() => this.onTabChange()),
+      vscode.window.tabGroups.onDidChangeTabGroups(() => this.onTabChange()),
       vscode.workspace.onDidChangeConfiguration((e) => {
         if (!e.affectsConfiguration('ccPulse')) return;
         this.restartTimer();
@@ -141,6 +144,7 @@ class Pulse {
       cacheWarnMinutes: c.get('cacheWarnMinutes'),
       projectRoots: c.get('projectRoots'),
       showToday: c.get('showToday'),
+      followTab: c.get('followTab'),
       notifyContext: c.get('notifyContext'),
       notifyCache: c.get('notifyCache'),
     };
@@ -190,6 +194,7 @@ class Pulse {
       this.pinned = null; // the pinned transcript was deleted
       this.context.workspaceState.update('pinned', undefined);
     }
+    if (this.viewing && this.states.has(this.viewing)) return this.viewing;
     const dirs = new Set(this.workspaceDirs());
     let best = null;
     let bestAny = null;
@@ -217,6 +222,7 @@ class Pulse {
       for (const st of loaded) this.states.set(st.file, st);
       let changed = rescan;
       for (const st of [...this.states.values()]) if (await this.read(st)) changed = true;
+      this.syncTab(); // the title of a conversation may reach its transcript after the tab was already switched to
       const next = this.pickCurrent();
       if (next !== this.current) {
         this.setCurrent(next);
@@ -252,6 +258,39 @@ class Pulse {
         if (e.code !== 'ENOENT') throw e; // the transcript was deleted meanwhile
       }
     }
+  }
+
+  /**
+   * Follows the conversation tab that is active in the editor: a Claude Code tab is titled like its
+   * session, so the session is found by that title. A tab that is not a conversation (a file, a
+   * terminal) leaves the choice as it was; a conversation tab that matches nothing yet (a new one
+   * with no title) falls back to the session with the newest activity.
+   */
+  syncTab() {
+    if (!this.cfg().followTab) {
+      this.viewing = null;
+      return;
+    }
+    const tab = vscode.window.tabGroups.activeTabGroup.activeTab;
+    if (!tab || !tab.input || !('viewType' in tab.input)) return; // not a webview: keep the previous choice
+    const label = tab.label.trim();
+    let match = null;
+    for (const st of this.states.values()) {
+      if (!core.isMainSession(st.file) || (st.title || '').trim() !== label) continue;
+      if (!match || st.mtimeMs > match.mtimeMs) match = st;
+    }
+    this.viewing = match ? match.file : null;
+  }
+
+  onTabChange() {
+    const before = this.current;
+    this.syncTab();
+    const next = this.pickCurrent();
+    if (next === before) return;
+    this.setCurrent(next);
+    const cfg = this.cfg();
+    this.updateSession(cfg);
+    this.postLog();
   }
 
   setCurrent(file) {
@@ -386,6 +425,7 @@ class Pulse {
     const stateLine = { generating: '正在生成回复', tool: '正在执行工具（也可能在等你批准权限）', waiting: '等你回复', idle: '空闲' }[kind];
     this.put(it.state, 'tooltip', md([
       `**${stateLine}** · ${s.model || ''}${s.effort ? ' · ' + s.effort : ''}`,
+      `会话：${(s.title || '').replace(/[|\n]/g, ' ').slice(0, 50)}`,
       '',
       '| | |',
       '|---|---:|',
