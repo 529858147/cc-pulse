@@ -70,6 +70,9 @@ const CLAUDE_TAB = 'claudeVSCodePanel';
 const UNTITLED = 'Claude Code';
 const tabLabel = (title) => (title.length > 25 ? title.substring(0, 24) + '…' : title);
 const NEW_CONVERSATION = '<new conversation>';
+const EDITOR_ENTRY = 'claude-vscode'; // entrypoint of sessions started from the editor panel
+const BIND_SLACK_MS = 15000; // a session file may be created slightly before the tab is seen to be untitled
+const isClaudeTab = (t) => !!(t && t.input && 'viewType' in t.input && t.input.viewType.includes(CLAUDE_TAB));
 
 class Pulse {
   constructor(context) {
@@ -86,7 +89,7 @@ class Pulse {
     this.range = 'all'; // date range of the 全局洞察 tab, chosen in the panel
     this.pinned = context.workspaceState.get('pinned') || null; // session file the status bar is fixed to, or null to follow the newest
     this.viewing = null; // session of the conversation tab that is active in the editor, NEW_CONVERSATION, or null
-    this.fresh = null; // the new (untitled) conversation: { known: session files seen before it, file: its own once it exists }
+    this.fresh = null; // the new (untitled) conversation: { since, file: its session once found, labelled: it has had its own label, previous: session shown before }
     this.blank = new core.FileState(path.join(core.PROJECTS_DIR, 'new-conversation.jsonl')); // stands in for a session with no transcript yet
     this.usage = null; // today / this week over every session
     this.notified = { ctx: new Set(), cache: new Map() }; // what has already been announced, so each is shown once
@@ -277,11 +280,26 @@ class Pulse {
   }
 
   /**
+   * The session a new (untitled) conversation tab belongs to: one the editor panel created shortly
+   * before the tab appeared or since, that no other open tab shows. `/clear` creates its session file
+   * at once (with only the command in it), so it can exist before or after the tab is renamed.
+   */
+  findBorn() {
+    const labels = new Set(vscode.window.tabGroups.all.flatMap((g) => g.tabs).filter(isClaudeTab).map((t) => t.label.trim()));
+    return (
+      this.mainFiles(true)
+        .map((f) => this.states.get(f))
+        .filter((st) => st.file !== this.fresh.previous && st.entry === EDITOR_ENTRY && st.firstTs >= this.fresh.since - BIND_SLACK_MS && !labels.has(tabLabel((st.title || st.firstPrompt || '').trim())))
+        .sort((a, b) => b.firstTs - a.firstTs)[0] || {}
+    ).file;
+  }
+
+  /**
    * Follows the Claude Code conversation tab that is active in the editor.
    *  - The tab is titled like its session (cut to 24 characters plus … when longer than 25), so the
    *    session is found by that label; a session without a title is labelled by its first prompt.
-   *  - A new conversation has no title and no transcript until the first message: it shows an empty
-   *    session, then binds to the first session file that appears while that tab is the active one.
+   *  - A new conversation, or one just cleared with /clear, is labelled "Claude Code": it shows an
+   *    empty session until its session file is found (see findBorn) and stays bound to it.
    *  - Tabs that are not conversations (files, terminals, other webviews) leave the choice as it was.
    *  - A conversation tab that matches nothing else falls back to the newest activity.
    */
@@ -291,8 +309,7 @@ class Pulse {
       return;
     }
     const tab = vscode.window.tabGroups.activeTabGroup.activeTab;
-    const isClaude = tab && tab.input && 'viewType' in tab.input && tab.input.viewType.includes(CLAUDE_TAB);
-    if (!isClaude) return this.learnFiles();
+    if (!isClaudeTab(tab)) return;
     const label = tab.label.trim();
     let match = null;
     for (const st of this.states.values()) {
@@ -302,28 +319,24 @@ class Pulse {
     }
     if (match) {
       this.viewing = match.file;
-      return this.learnFiles();
+      if (this.fresh && this.fresh.file === match.file) this.fresh.labelled = true; // it has got its own label
+      return;
     }
     if (label !== UNTITLED) {
       this.viewing = null;
       return;
     }
-    if (!this.fresh) this.fresh = { known: new Set(this.mainFiles()), file: null };
-    if (!this.fresh.file) {
-      const born = this.mainFiles(true).filter((f) => !this.fresh.known.has(f));
-      if (born.length) this.fresh.file = born.map((f) => this.states.get(f)).sort((a, b) => b.mtimeMs - a.mtimeMs)[0].file;
-    }
+    // A tab that had its session's label and is untitled again was cleared: it needs a new session.
+    if (this.fresh && this.fresh.labelled) this.fresh = null;
+    // `previous`: the session this tab showed until now. After /clear it is not the new conversation, even if it is young.
+    if (!this.fresh) this.fresh = { since: Date.now(), file: null, labelled: false, previous: this.viewing && this.viewing !== NEW_CONVERSATION ? this.viewing : null };
+    if (!this.fresh.file || !this.states.has(this.fresh.file)) this.fresh.file = this.findBorn() || null;
     this.viewing = this.fresh.file || NEW_CONVERSATION;
-  }
-
-  /** While the new-conversation tab is not the active one, session files that appear are not its own. */
-  learnFiles() {
-    if (this.fresh && !this.fresh.file) for (const f of this.mainFiles()) this.fresh.known.add(f);
   }
 
   onTabChange(e) {
     // a newly opened untitled conversation starts over, whichever one was pending before
-    if (e && e.opened && e.opened.some((t) => t.input && 'viewType' in t.input && t.input.viewType.includes(CLAUDE_TAB) && t.label.trim() === UNTITLED)) this.fresh = null;
+    if (e && e.opened && e.opened.some((t) => isClaudeTab(t) && t.label.trim() === UNTITLED)) this.fresh = null;
     const before = this.current;
     this.syncTab();
     const next = this.pickCurrent();
@@ -392,7 +405,8 @@ class Pulse {
     }
     this.prev = { steps: s.steps, total, pct: s.context.pct };
     s.pinned = !!this.pinned;
-    s.blank = st === this.blank;
+    // a session with no request and no prompt (nothing but /clear or another command) is shown as a new conversation
+    s.blank = st === this.blank || (!st.reqs.size && !st.turns);
     if (s.blank) s.title = '新对话（还没有消息）';
     this.session = s;
     this.renderStatus();

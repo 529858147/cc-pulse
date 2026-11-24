@@ -33,6 +33,8 @@ class FileState {
     this.turns = 0;
     this.compactions = 0;
     this.compactTs = []; // when each compaction happened
+    this.firstTs = 0; // timestamp of the first record: when the session was created
+    this.entry = null; // what started the session: claude-vscode (the editor panel), cli (a terminal), sdk-*
     this.title = null;
     this.firstPrompt = null;
     this.cwd = null;
@@ -142,6 +144,8 @@ function parseLine(st, line) {
     return;
   }
   const ts = d.timestamp ? Date.parse(d.timestamp) : 0;
+  if (ts && !st.firstTs) st.firstTs = ts;
+  if (!st.entry && d.entrypoint) st.entry = d.entrypoint;
   switch (d.type) {
     case 'assistant':
       addAssistant(st, d, ts);
