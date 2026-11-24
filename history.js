@@ -35,8 +35,8 @@ class History {
       const stored = this.days[day] || (this.days[day] = {});
       for (const [model, t] of Object.entries(models)) {
         const old = stored[model];
-        // Same request count but the stored entry predates the effort breakdown or the speed totals: backfill it.
-        if (!old || t.reqs > old.reqs || (t.reqs === old.reqs && (!old.eff || old.dur === undefined))) {
+        // Same request count but the stored entry predates the effort breakdown, the speed totals or the cost split: backfill it.
+        if (!old || t.reqs > old.reqs || (t.reqs === old.reqs && (!old.eff || old.cIn === undefined))) {
           stored[model] = t;
           changed = true;
         }

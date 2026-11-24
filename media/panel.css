@@ -104,6 +104,10 @@ button.small:hover:not(:disabled) { color: var(--vscode-foreground); }
 .calwk { padding-top: 12px; font-size: 9px; color: var(--muted); }
 .calwk span { display: block; height: 12px; line-height: 10px; }
 /* line charts: the hovered point shows its dot, compactions are drawn as vertical lines */
+.dl { color: var(--muted); }
+.dl.up { color: var(--warn); }
+section h4 { margin: 10px 0 0; font-size: 11px; font-weight: normal; color: var(--muted); }
+svg polyline.ln { fill: none; stroke-width: 1.5; stroke-linejoin: round; vector-effect: non-scaling-stroke; }
 .pt circle { fill: var(--accent); opacity: 0; pointer-events: none; }
 .pt:hover circle { opacity: 1; }
 svg line.mark { stroke: var(--vscode-charts-orange); stroke-width: 1; stroke-dasharray: 3 2; vector-effect: non-scaling-stroke; }

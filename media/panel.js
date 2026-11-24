@@ -50,7 +50,7 @@
     return p ? t.cr / p : null;
   };
   function sumT(list) {
-    const o = { in: 0, cr: 0, cw: 0, out: 0, think: 0, reqs: 0, cost: 0, unpriced: 0, dur: 0, sout: 0 };
+    const o = { in: 0, cr: 0, cw: 0, out: 0, think: 0, reqs: 0, cost: 0, unpriced: 0, dur: 0, sout: 0, cIn: 0, cOut: 0, cCr: 0, cCw: 0 };
     for (const t of list) for (const k in o) o[k] += t[k] || 0;
     return o;
   }
@@ -206,6 +206,40 @@
     tipKey = null;
   }
 
+  // ---------- where the money goes
+  const PART_NAMES = { cr: '缓存读取', in: '未缓存输入', cw: '缓存写入', out: '输出' };
+  const costOf = (t) => ({ in: t.cIn, out: t.cOut, cr: t.cCr, cw: t.cCw });
+  /** The biggest cost item of {in,out,cr,cw} dollars, e.g. "缓存写入 61%". */
+  function domPart(c) {
+    const all = c.in + c.out + c.cr + c.cw;
+    if (!all) return '';
+    const [k, v] = Object.entries(c).sort((a, b) => b[1] - a[1])[0];
+    return `${PART_NAMES[k]} ${pct(v / all)}`;
+  }
+  /** Like stackBar but by dollars: output and cache writes cost far more per token than cache reads. */
+  function costBar(c) {
+    const all = c.in + c.out + c.cr + c.cw || 1;
+    const seg = (k, n) => tips.push(tipHtml(n, usd(c[k]), `占 ${pct(c[k] / all)}`)) - 1;
+    return `<div class="bar">${TT.map(([k, n, col]) => `<i data-tip="${seg(k, n)}" style="width:${(c[k] / all) * 100}%;background:${col}"></i>`).join('')}</div>
+      <div class="legend">${TT.map(([k, n, col]) => `<span><i style="background:${col}"></i>${n} ${usd(c[k])} ${pct(c[k] / all)}</span>`).join('')}</div>`;
+  }
+  /** "↑38% 较上周同期"; grey when it fell, amber when it grew by half or more. */
+  const delta = (c, note = '') => (c ? `<span class="dl ${c.pct >= 0.5 ? 'up' : ''}" title="${esc(c.label + '：' + usd(c.base) + note)}">${c.pct >= 0 ? '↑' : '↓'}${Math.abs(c.pct * 100).toFixed(0)}% 较${esc(c.label)}</span>` : '');
+  const when = (t) => new Date(t).toLocaleString('zh-CN', { hour12: false, month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+  const gapText = (s) => (s < 60 ? Math.round(s) + ' 秒' : s < 3600 ? Math.round(s / 60) + ' 分钟' : (s / 3600).toFixed(1) + ' 小时');
+  const CAUSES = [['ttl', '隔太久，缓存已过期'], ['model', '切换了模型'], ['other', '提示内容变了'], ['compact', '压缩后重建（正常）']];
+  /** Cache rebuilds with their cause and the extra they cost. `m` comes from summarizeMisses in stats.js. */
+  function missesSection(m) {
+    if (!m.n) return '<section><h3>缓存重写<span>没有发生</span></h3><div class="sub">所选范围内没有缓存被整体重写。</div></section>';
+    const top = Math.max(...CAUSES.map(([k]) => m.by[k].extra)) || 1;
+    return `<section><h3>缓存重写<span>可避免 ${m.avoidableN} 次 · 多花约 ${usd(m.avoidable)}</span></h3>
+      <div class="rank">${CAUSES.filter(([k]) => m.by[k].n)
+        .map(([k, n]) => `<div class="row"><span class="n">${n}</span><span class="c">${m.by[k].n} 次 · ${usd(m.by[k].extra)}</span><div class="bar"><i style="width:${(m.by[k].extra / top) * 100}%;background:${k === 'compact' ? 'var(--track)' : 'var(--vscode-charts-orange)'}"></i></div></div>`)
+        .join('')}</div>
+      ${m.worst.length ? `<h4>最贵的几次</h4>${m.worst.map((e) => `<div class="sess"><span class="t">${esc(e.session || modelName(e.model))}</span><span class="r">${usd(e.extra)}</span><span class="m">${when(e.t)} · ${CAUSES.find((c) => c[0] === e.cause)[1]}${e.cause === 'ttl' ? '，间隔 ' + gapText(e.gap) : ''}</span><span class="r">重写 ${tok(e.cw)}</span></div>`).join('')}` : ''}
+      <div class="note">缓存被整体重写时，已有的上下文要按缓存写入价重新付一遍，比读取贵。金额是多付的差额的估算；压缩后的重建不可避免，不计入“可避免”。</div></section>`;
+  }
+
   // ---------- tab: current session
   function cacheText(s) {
     if (!s.cache) return '—';
@@ -250,6 +284,7 @@
       <section><h3>Token 用量<span>命中率 ${pct(hitOf(t))}</span></h3>
         <div class="card" style="border:0;padding:0;background:none"><div class="v">${total(t).toLocaleString()}<small>tokens</small></div></div>
         ${stackBar(t)}
+        <h4>费用构成</h4>${costBar(costOf(t))}
         ${kv([
           ['缓存读取', tok(s.tokens.cr)],
           ['未缓存输入', tok(s.tokens.in)],
@@ -259,6 +294,7 @@
           ['估算费用', usd(t.cost)],
         ])}
         <div class="note">缓存：<span id="cacheFull">${cacheText(s)}</span>。费用按 API 价格折算，仅供参考。</div></section>
+      ${missesSection(s.misses)}
       <section><h3>上下文窗口<span>${s.turns} 轮 · ${s.steps} 步</span></h3>
         <div class="bar"><i style="width:${Math.min(100, (s.context.pct || 0) * 100)}%;background:${level(s.context.pct) === 'alert' ? 'var(--alert)' : level(s.context.pct) === 'warn' ? 'var(--warn)' : 'var(--accent)'}"></i></div>
         ${lineChart({
@@ -325,6 +361,25 @@
       .join('');
     return `<h3>会话列表<span>${list.length} / ${G.g.sessions.length} · 用量为所选范围内</span></h3>${rows || '<div class="sub">没有匹配的会话</div>'}`;
   }
+  function topSessions(g) {
+    const rows = g.sessions.slice().sort((a, b) => b.cost - a.cost).slice(0, 5).filter((x) => x.cost > 0);
+    if (!rows.length) return '';
+    return `<h4>最贵的会话</h4>${rows.map((x) => `<div class="sess" title="${esc(x.id)}"><span class="t">${esc(x.title)}</span><span class="r">${usd(x.cost)} · 占 ${pct(x.cost / (g.totals.cost || 1))}</span><span class="m">${esc(x.project)} · 主要花在${domPart(x.parts)}</span><span class="r">${x.reqs} 次请求</span></div>`).join('')}`;
+  }
+  function topRequests(g) {
+    if (!g.topRequests.length) return '';
+    return `<h4>最贵的请求</h4>${g.topRequests.map((r) => `<div class="sess"><span class="t">${esc(r.session)}</span><span class="r">${usd(r.cost)}</span><span class="m">${when(r.t)} · ${esc(modelName(r.model))}${r.effort ? ' ' + esc(r.effort) : ''} · ${domPart(r.parts)}${r.miss ? ' · 缓存重写' : ''}${r.side ? ' · 子代理' : ''}</span><span class="r"></span></div>`).join('')}`;
+  }
+  function hourSpeed(g) {
+    return bars(
+      g.speedHour.map((x, h) => ({
+        label: String(h),
+        tip: tipHtml(`${h}:00 – ${h + 1}:00`, x.avg && x.n >= 3 ? num(x.avg, 0) + ' tok/s' : '—', x.n ? `${x.n} 次请求${x.n < 3 ? '，样本太少' : ''}` : '没有请求'),
+        parts: [{ v: x.n >= 3 && x.avg ? x.avg : 0, c: 'var(--accent)' }],
+      })),
+      100,
+    );
+  }
   function renderGlobalBody() {
     if (!G) return '<div class="empty">正在扫描会话记录…</div>';
     tips.length = 0;
@@ -335,7 +390,7 @@
       <div class="grid3">
         ${card('会话', g.sessionCount, `${g.activeSessions} 个活跃（此刻）`)}
         ${card('Token 消耗', tok(t.total), `${t.reqs.toLocaleString()} 次请求`)}
-        ${card('估算费用', usd(t.cost), 'API 价格折算')}
+        ${card('估算费用', usd(t.cost), 'API 价格折算' + (G.cmp[g.range === G.cal.month ? 'month' : g.range] ? '<br>' + delta(G.cmp[g.range === G.cal.month ? 'month' : g.range]) : ''))}
         ${card('缓存命中率', pct(t.hit), `${tok(t.cr)} 读取`)}
         ${card('工具调用', g.toolCalls.toLocaleString(), `${t.reqs.toLocaleString()} 次模型调用`)}
         ${card('活跃时长', hours(g.activeMs), `${g.sessionCount} 个会话`)}
@@ -345,6 +400,12 @@
       <section><h3>活跃度热力图<span class="seg"><button data-heat="reqs" class="${ui.heat === 'reqs' ? 'on' : ''}">请求数</button><button data-heat="tokens" class="${ui.heat === 'tokens' ? 'on' : ''}">Token</button></span></h3>
         ${heatmap(g.heat[ui.heat])}</section>
       <section><h3>Token 构成<span>${tok(t.total)}</span></h3>${stackBar(t)}</section>
+      <section><h3>花费去向<span>${usd(t.cost)}</span></h3>${costBar(g.costParts)}
+        <div class="note">按金额算：缓存读取占 ${pct(t.cr / (t.total || 1))} 的 Token，只占 ${pct(g.costParts.cr / (t.cost || 1))} 的费用。</div>
+        ${topSessions(g)}${topRequests(g)}</section>
+      ${missesSection(g.misses)}
+      <section><h3>按小时的速度<span>均值 ${t.dur > 0 ? num(t.sout / t.dur, 0) : '—'} tok/s</span></h3>${hourSpeed(g)}
+        <div class="note">每根柱是该小时全部请求的平均输出速率（tok/s），样本少于 3 次的小时不画。不同模型速度不同，时段里换了模型也会拉动平均；想判断是不是 API 变慢，先看“模型用量”里的速度趋势。</div></section>
       ${rank('项目分布', g.projects, (x) => `${tok(x.value)} · ${x.sessions} 会话`, `${g.projects.length} 个项目`)}
       ${rank('技能与斜杠命令', g.skills, (x) => x.value + ' 次', '/ 开头为手动输入的命令')}
       ${rank('工具调用', g.tools, (x) => x.value.toLocaleString() + ' 次')}
@@ -447,12 +508,12 @@
     const yearT = rangeTotal((d) => d.startsWith(String(year)));
     const models = Object.entries(G.daily[day] || {}).sort((a, b) => total(b[1]) - total(a[1]));
     const mo = rangeTotal((d) => d.startsWith(month));
-    const cards = [...RANGES.map(([k, n]) => [k === 'all' ? '累计用量' : n + '用量', presetTotal(k)])];
-    cards.splice(4, 0, ['本月用量', mo]);
+    const cards = [...RANGES.map(([k, n]) => [k === 'all' ? '累计用量' : n + '用量', presetTotal(k), G.cmp[k], k === 'today' ? '；今日尚未结束，数字会随时间增长' : ''])];
+    cards.splice(4, 0, ['本月用量', mo, G.cmp.month, '']);
     return `
       <div class="sub srcnote">累计历史 · 卡片是固定范围，不随其他页的范围切换</div>
       <div class="grid2">
-        ${cards.map(([n, t]) => card(n, tok(total(t)), usd(t.cost))).join('')}
+        ${cards.map(([n, t, c, note]) => card(n, tok(total(t)), usd(t.cost) + (c ? '<br>' + delta(c, note) : ''))).join('')}
       </div>
       <section><h3><span class="nav"><button class="small" data-year="${year - 1}" ${years.includes(year - 1) ? '' : 'disabled'}>‹</button><b>${year}</b><button class="small" data-year="${year + 1}" ${years.includes(year + 1) ? '' : 'disabled'}>›</button></span><span>${tok(total(yearT))} tokens</span></h3>
         ${calendar(year)}
@@ -465,6 +526,56 @@
   }
 
   // ---------- tab: model usage
+  /** Average output speed per model for each chart column, from the dur/sout totals kept in the daily history. */
+  function speedTrend(models, buckets, cols) {
+    const series = models
+      .map((mm) => ({
+        name: modelName(mm),
+        color: modelColor(mm),
+        vals: buckets.map(([, keys]) => {
+          let sout = 0;
+          let dur = 0;
+          for (const k of keys) {
+            const t = (G.daily[k] || {})[mm];
+            if (t && t.dur > 0) (sout += t.sout, (dur += t.dur));
+          }
+          return dur > 0 ? sout / dur : null;
+        }),
+      }))
+      .filter((x) => x.vals.some((v) => v != null));
+    const head = '<section><h3>速度趋势<span>tok/s</span></h3>';
+    if (!series.length) return head + '<div class="sub">这段时间没有速度记录。速度从 0.7.0 起随每日汇总保存，更早的天没有。</div></section>';
+    const top = niceMax(Math.max(...series.flatMap((x) => x.vals.filter((v) => v != null))));
+    const L = 30;
+    const h = 100;
+    const y0 = 6;
+    const base = h - 12;
+    const w = (300 - L) / cols.length;
+    const yOf = (v) => base - (v / top) * (base - y0);
+    const xOf = (i) => L + i * w + w / 2;
+    const every = Math.ceil(cols.length / 8);
+    let out = '';
+    for (const v of [0, top / 2, top]) out += `<line class="grid ${v ? 'dash' : ''}" x1="${L}" x2="300" y1="${yOf(v)}" y2="${yOf(v)}"/><text x="${L - 5}" y="${yOf(v) + 3}" text-anchor="end">${tok(v)}</text>`;
+    for (const x of series) {
+      // a gap (a day without speed data) breaks the line instead of being drawn as zero
+      let run = [];
+      const flush = () => {
+        if (run.length > 1) out += `<polyline class="ln" stroke="${x.color}" points="${run.map(([i, v]) => `${xOf(i).toFixed(1)},${yOf(v).toFixed(1)}`).join(' ')}"/>`;
+        run = [];
+      };
+      x.vals.forEach((v, i) => (v == null ? flush() : run.push([i, v])));
+      flush();
+      x.vals.forEach((v, i) => v != null && (out += `<circle cx="${xOf(i).toFixed(1)}" cy="${yOf(v).toFixed(1)}" r="2" fill="${x.color}"/>`));
+    }
+    cols.forEach((c, i) => {
+      if (i % every === 0) out += `<text x="${xOf(i)}" y="${h}" text-anchor="middle">${esc(c.label)}</text>`;
+      const rows = series.filter((x) => x.vals[i] != null).map((x) => `<i style="background:${x.color}"></i><span>${esc(x.name)}</span><span>${num(x.vals[i], 0)} tok/s</span><span></span>`).join('');
+      out += `<rect class="hit" data-tip="${tips.push({ html: `<div class="d">${esc(c.tip.title)}</div>${rows ? `<div class="m">${rows}</div>` : '<div class="d">没有速度记录</div>'}` }) - 1}" x="${L + i * w}" y="${y0}" width="${w}" height="${base - y0}"/>`;
+    });
+    return `${head}<div class="legend" style="margin:0 0 4px">${series.map((x) => `<span><i style="background:${x.color}"></i>${esc(x.name)}</span>`).join('')}</div>
+      <svg viewBox="0 0 300 ${h}" style="height:${h}px">${out}</svg>
+      <div class="note">每个点是该模型在这一列的平均输出速率；同一条线突然下滑，才更可能是 API 变慢。</div></section>`;
+  }
   function renderModels() {
     if (!G) return '<div class="empty">正在扫描会话记录…</div>';
     tips.length = 0;
@@ -508,6 +619,7 @@
       <section><h3>${head}${granBar}</h3>
         <div class="legend" style="margin:0 0 4px">${models.map((mm) => `<span><i style="background:${modelColor(mm)}"></i>${esc(modelName(mm))}</span>`).join('')}</div>
         ${bars(cols, 120)}</section>
+      ${speedTrend(models, [...buckets], cols)}
       <section><h3>按模型<span>${usd(mt.cost)}</span></h3>
         <div class="total"><span>全部模型</span><b>${tok(total(mt))} (100%) · ${mt.reqs.toLocaleString()} 次 · 命中 ${pct(hitOf(mt))}</b></div>
         <div class="scroll"><table><tr><th>模型</th><th>Effort</th><th>总 Token</th><th>未缓存输入</th><th>缓存读取</th><th>命中率</th><th>缓存写入</th><th>输出</th><th>费用</th><th title="费用 ÷ 请求数">成本/次</th><th title="输出 token ÷ 请求总耗时（含等待首字的时间）；没有耗时记录的旧历史不计入">速度 tok/s</th><th>请求</th></tr>${rows || '<tr><td colspan="12">这段时间没有记录</td></tr>'}</table></div></section>
@@ -600,7 +712,7 @@
       S = data.s;
       cfg = data.cfg;
     } else if (data.type === 'global') {
-      G = { g: data.g, daily: data.daily, cal: data.cal };
+      G = { g: data.g, daily: data.daily, cal: data.cal, cmp: data.cmp || {} };
     }
     refresh(data.type);
   });

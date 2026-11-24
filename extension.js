@@ -30,6 +30,10 @@ function fmtNum(x, d = 1) {
 function fmtUsd(x) {
   return x == null ? '—' : x > 0 && x < 0.01 ? '<$0.01' : '$' + x.toFixed(2);
 }
+/** "↑38% 较上周同期", or '' when there is no baseline to compare with. */
+function fmtDelta(c, note = '') {
+  return c ? `${c.pct >= 0 ? '↑' : '↓'}${Math.abs(c.pct * 100).toFixed(0)}% 较${c.label}${note}` : '';
+}
 function fmtDur(ms) {
   const s = Math.max(0, Math.round(ms / 1000));
   if (s < 60) return s + 's';
@@ -320,7 +324,8 @@ class Pulse {
     const g = stats.globalInsights(all, { ...cfg, range: this.range }, now);
     if (merge && this.history.merge(stats.dailyByModel(all, cfg.timeZone))) await this.history.save();
     const tz = cfg.timeZone || Intl.DateTimeFormat().resolvedOptions().timeZone;
-    this.global = { g, daily: this.history.days, cal: { ...stats.calendarKeys(cfg.timeZone, now), tz } };
+    const keys = stats.calendarKeys(cfg.timeZone, now);
+    this.global = { g, daily: this.history.days, cal: { ...keys, tz }, cmp: stats.periodComparisons(this.history.days, keys) };
     this.post({ type: 'global', ...this.global, now });
   }
 
@@ -446,6 +451,7 @@ class Pulse {
     ]));
     // ---- today, over every session
     const u = this.usage;
+    const cmp = (this.global && this.global.cmp) || {};
     if (cfg.showToday && u) {
       this.put(it.today, 'text', `$(graph) 今日 ${fmtTok(u.today.total)} · ${fmtUsd(u.today.cost)}`);
       this.put(it.today, 'tooltip', md([
@@ -454,7 +460,9 @@ class Pulse {
         '| | |',
         '|---|---:|',
         `| 今日 | **${fmtTok(u.today.total)}** · ${fmtUsd(u.today.cost)} · ${u.today.reqs} 次 |`,
+        ...(cmp.today ? [`| | ${fmtDelta(cmp.today, '（今日未结束）')} |`] : []),
         `| 本周 | ${fmtTok(u.week.total)} · ${fmtUsd(u.week.cost)} · ${u.week.reqs} 次 |`,
+        ...(cmp.week ? [`| | ${fmtDelta(cmp.week)} |`] : []),
         `| 今日缓存命中率 | ${fmtPct(u.today.hit)} |`,
         ...u.models.map((m) => `| ${modelName(m.model)} | ${fmtTok(m.total)} · ${fmtUsd(m.cost)} |`),
         '',

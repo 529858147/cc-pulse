@@ -2,7 +2,7 @@
   "name": "cc-pulse",
   "displayName": "CC Pulse",
   "description": "Claude Code 会话仪表盘：速率、Token、缓存倒计时、上下文、全局洞察与历史用量（只读本地会话记录）",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "publisher": "local",
   "license": "MIT",
   "engines": {

@@ -43,14 +43,32 @@ function priceFor(model) {
   return p;
 }
 
-/** USD cost of one request, or null when the model has no known price. */
-function requestCost(r) {
-  let p = priceFor(r.model);
-  if (!p) return null;
-  if (p.longOver && r.in + r.cr + r.cw > p.longOver) p = p.long;
-  // Older transcripts have no 5m/1h split; count the unsplit part at the 5-minute rate.
-  const cw5 = r.cw5 + Math.max(0, r.cw - r.cw5 - r.cw1h);
-  return (r.in * p.in + r.out * p.out + r.cr * p.cr + cw5 * p.cw5 + r.cw1h * p.cw1h) / 1e6;
+/** The price row that applies to this request (Haiku 5.5 has a higher tier for long prompts), or null. */
+function pricesOf(r) {
+  const p = priceFor(r.model);
+  return p && p.longOver && r.in + r.cr + r.cw > p.longOver ? p.long : p;
 }
 
-module.exports = { priceFor, requestCost };
+// Older transcripts have no 5m/1h split; the unsplit part counts at the 5-minute rate.
+const cw5Of = (r) => r.cw5 + Math.max(0, r.cw - r.cw5 - r.cw1h);
+
+/** USD cost of one request split by what was paid for, or null when the model has no known price. */
+function costParts(r) {
+  const p = pricesOf(r);
+  if (!p) return null;
+  return { in: (r.in * p.in) / 1e6, out: (r.out * p.out) / 1e6, cr: (r.cr * p.cr) / 1e6, cw: (cw5Of(r) * p.cw5 + r.cw1h * p.cw1h) / 1e6 };
+}
+
+/** USD cost of one request, or null when the model has no known price. */
+function requestCost(r) {
+  const c = costParts(r);
+  return c && c.in + c.out + c.cr + c.cw;
+}
+
+/** What writing the cache again cost on top of what reading it would have: cache-write minus cache-read price. */
+function cacheRewriteExtra(r) {
+  const p = pricesOf(r);
+  return p && (cw5Of(r) * (p.cw5 - p.cr) + r.cw1h * (p.cw1h - p.cr)) / 1e6;
+}
+
+module.exports = { priceFor, requestCost, costParts, cacheRewriteExtra };

@@ -1,7 +1,7 @@
 'use strict';
 // Aggregations over parsed transcripts. Pure functions of FileState objects plus options.
 const path = require('path');
-const { requestCost } = require('./pricing');
+const { requestCost, costParts, cacheRewriteExtra } = require('./pricing');
 const { sessionFileOf } = require('./core');
 
 function bump(map, key, n = 1) {
@@ -17,7 +17,8 @@ const STALE_MS = 30 * 60000;
 
 function emptyTokens() {
   // dur / sout: seconds and output tokens of the requests whose duration is known, for a weighted average speed.
-  return { in: 0, cr: 0, cw: 0, out: 0, think: 0, reqs: 0, cost: 0, unpriced: 0, dur: 0, sout: 0 };
+  // cIn / cOut / cCr / cCw: the cost split by what was paid for (uncached input, output, cache read, cache write).
+  return { in: 0, cr: 0, cw: 0, out: 0, think: 0, reqs: 0, cost: 0, unpriced: 0, dur: 0, sout: 0, cIn: 0, cOut: 0, cCr: 0, cCw: 0 };
 }
 function addTokens(t, r) {
   const dur = r.sendTs ? (r.endTs - r.sendTs) / 1000 : null;
@@ -31,9 +32,57 @@ function addTokens(t, r) {
   t.out += r.out;
   t.think += r.think;
   t.reqs++;
-  const c = requestCost(r);
+  const c = costParts(r);
   if (c === null) t.unpriced++;
-  else t.cost += c;
+  else {
+    t.cIn += c.in;
+    t.cOut += c.out;
+    t.cCr += c.cr;
+    t.cCw += c.cw;
+    t.cost += c.in + c.out + c.cr + c.cw;
+  }
+}
+const costOf = (t) => ({ in: t.cIn, out: t.cOut, cr: t.cCr, cw: t.cCw });
+
+// A request that rewrote at least this many tokens with under half served from cache rebuilt the cache.
+const MISS_TOKENS = 20000;
+const MISS_CAUSES = ['ttl', 'model', 'other', 'compact'];
+
+/**
+ * Cache rebuilds of one conversation, with the likely cause: the cache had expired (gap longer than its
+ * TTL), the model was switched, a compaction rewrote the context, or the prompt changed some other way.
+ * `extra` is what the rewrite cost beyond reading the same tokens from cache.
+ */
+function cacheMisses(main, compactTs) {
+  const out = [];
+  for (let i = 1; i < main.length; i++) {
+    const r = main[i];
+    const prev = main[i - 1];
+    if (r.cw < MISS_TOKENS || hitRate(r) >= 0.5) continue;
+    const extra = cacheRewriteExtra(r);
+    if (extra === null) continue;
+    const gap = ((r.sendTs || r.startTs) - prev.endTs) / 1000;
+    const cause = compactTs.some((c) => c > prev.endTs && c <= r.startTs) ? 'compact' : prev.ttl && gap > prev.ttl ? 'ttl' : r.model !== prev.model ? 'model' : 'other';
+    out.push({ t: r.startTs, cause, extra, gap, cw: r.cw, model: r.model });
+  }
+  return out;
+}
+
+/** Counts and extra cost per cause. Rebuilds right after a compaction are normal, so they are not part of `avoidable`. */
+function summarizeMisses(events) {
+  const by = Object.fromEntries(MISS_CAUSES.map((c) => [c, { n: 0, extra: 0 }]));
+  for (const e of events) {
+    by[e.cause].n++;
+    by[e.cause].extra += e.extra;
+  }
+  const bad = events.filter((e) => e.cause !== 'compact');
+  return {
+    n: events.length,
+    avoidableN: bad.length,
+    avoidable: bad.reduce((a, e) => a + e.extra, 0),
+    by,
+    worst: bad.sort((a, b) => b.extra - a.extra).slice(0, 3),
+  };
 }
 function totalOf(t) {
   return t.in + t.cr + t.cw + t.out;
@@ -147,6 +196,7 @@ function sessionStats(st, subStates, windows, now) {
     },
     tokens: tok,
     sub,
+    misses: summarizeMisses(cacheMisses(main, st.compactTs)),
     hit: hitRate(tok),
     lastHit: last ? hitRate(last) : null,
     lastCw: last ? last.cw : 0,
@@ -269,6 +319,9 @@ function globalInsights(states, opts, now) {
   const projects = new Map(); // name -> { tokens, sessions }
   const heatReq = Array.from({ length: 7 }, () => new Array(24).fill(0));
   const heatTok = Array.from({ length: 7 }, () => new Array(24).fill(0));
+  const speedHour = Array.from({ length: 24 }, () => ({ sout: 0, dur: 0, n: 0 }));
+  const topReq = [];
+  const missEvents = [];
   let toolCalls = 0;
   let active = 0;
   let activeTotal = 0;
@@ -282,10 +335,21 @@ function globalInsights(states, opts, now) {
         if (r.startTs) earliest = Math.min(earliest, r.startTs);
         if (!inRange(r.startTs)) continue;
         addTokens(t, r);
+        const cost = requestCost(r);
+        if (cost !== null) {
+          topReq.push({ t: r.startTs, cost, parts: costParts(r), model: r.model, effort: r.effort, side: r.side || s.isSub, session: st ? st.title || st.firstPrompt || '(无标题)' : '(会话记录已删除)', miss: r.cw >= MISS_TOKENS && hitRate(r) < 0.5 });
+          if (topReq.length > 60) (topReq.sort((a, b) => b.cost - a.cost), (topReq.length = 5));
+        }
         if (r.startTs) {
           const [h, w] = time.hourWeekday(r.startTs);
           heatReq[w][h]++;
           heatTok[w][h] += totalOf(r);
+          const dur = r.sendTs ? (r.endTs - r.sendTs) / 1000 : null;
+          if (dur !== null && dur >= 0.5 && r.out > 0) {
+            speedHour[h].sout += r.out;
+            speedHour[h].dur += dur;
+            speedHour[h].n++;
+          }
         }
       }
       for (const [ts, kind, name] of s.uses) {
@@ -302,14 +366,17 @@ function globalInsights(states, opts, now) {
         }
       }
     }
-    for (const k of ['in', 'cr', 'cw', 'out', 'think', 'reqs', 'cost', 'unpriced']) total[k] += t[k];
+    for (const k of ['in', 'cr', 'cw', 'out', 'think', 'reqs', 'cost', 'unpriced', 'dur', 'sout', 'cIn', 'cOut', 'cCr', 'cCw']) total[k] += t[k];
     if (!st) continue; // subagent files whose main session file is gone
     const state = sessionState(st, now);
     const lastTs = Math.max(st.mtimeMs, st.last.ts);
     // "Active now" describes the present, so it ignores the selected range.
     if (state.kind !== 'idle' && now - lastTs < STALE_MS) active++;
     if (!t.reqs && range.key !== 'all') continue; // no request of this session falls in the range
-    const main = mainRequests(st).filter((r) => inRange(r.startTs));
+    const allMain = mainRequests(st);
+    const main = allMain.filter((r) => inRange(r.startTs));
+    const title = st.title || st.firstPrompt || '(无标题)';
+    for (const e of cacheMisses(allMain, st.compactTs)) if (inRange(e.t)) missEvents.push({ ...e, session: title });
     const act = activeMs(main);
     activeTotal += act;
     const project = projectOf(st, opts.projectRoots);
@@ -325,6 +392,7 @@ function globalInsights(states, opts, now) {
       model: lastReq ? lastReq.model : null,
       total: totalOf(t),
       cost: t.cost,
+      parts: costOf(t),
       hit: hitRate(t),
       turns: st.promptTs.filter(inRange).length,
       reqs: t.reqs,
@@ -343,6 +411,10 @@ function globalInsights(states, opts, now) {
     toolCalls,
     activeMs: activeTotal,
     heat: { reqs: heatReq, tokens: heatTok },
+    costParts: costOf(total),
+    topRequests: topReq.sort((a, b) => b.cost - a.cost).slice(0, 5),
+    misses: summarizeMisses(missEvents),
+    speedHour: speedHour.map((x) => ({ n: x.n, avg: x.dur > 0 ? x.sout / x.dur : null })),
     projects: topN(projects, 12, (v) => v.tokens).map((x) => ({ name: x.name, value: x.value, sessions: x.raw.sessions })),
     skills: topN(skills, 12),
     tools: topN(tools, 12),
@@ -431,6 +503,47 @@ function requestLog(states, q, opts) {
 
 const RANGE_KEYS = ['today', 'week', 'last', 'd30', 'all'];
 
+/**
+ * Cost of each preset against a baseline of the same length, from the saved per-day history. A
+ * comparison is left out when the history does not reach back over the whole baseline: it would
+ * compare a full period with a partial one. `pct` is the change (0.38 = +38%).
+ */
+function periodComparisons(daily, cal) {
+  const first = Object.keys(daily).sort()[0];
+  if (!first) return {};
+  const dayCost = (d) => Object.values(daily[d] || {}).reduce((a, t) => a + t.cost, 0);
+  const span = (from, to) => {
+    let n = 0;
+    let c = 0;
+    for (let d = from; d <= to; d = addDays(d, 1)) (n++, (c += dayCost(d)));
+    return { n, c };
+  };
+  const days = (a, b) => Math.round((Date.parse(b + 'T00:00:00Z') - Date.parse(a + 'T00:00:00Z')) / 86400000);
+  const make = (label, cur, base) => (base.c > 0.005 ? { label, pct: cur.c / base.c - 1, base: base.c } : null);
+  const { today, weekStart, month, ranges } = cal;
+  const out = {};
+  // today against the average day of the week before (as many days as the history has, at least 2)
+  const from = first > addDays(today, -7) ? first : addDays(today, -7);
+  const prior = span(from, addDays(today, -1));
+  out.today = prior.n >= 2 ? make(`近 ${prior.n} 日日均`, span(today, today), { n: prior.n, c: prior.c / prior.n }) : null;
+  // this week so far against the same weekdays last week
+  const k = days(weekStart, today);
+  const lw = addDays(weekStart, -7);
+  out.week = lw >= first ? make('上周同期', span(weekStart, today), span(lw, addDays(lw, k))) : null;
+  const llw = addDays(ranges.last.from, -7);
+  out.last = llw >= first ? make('上上周', span(ranges.last.from, ranges.last.to), span(llw, addDays(ranges.last.to, -7))) : null;
+  const p30 = addDays(ranges.d30.from, -30);
+  out.d30 = p30 >= first ? make('前 30 天', span(ranges.d30.from, today), span(p30, addDays(ranges.d30.from, -1))) : null;
+  // this month so far against the same days of last month
+  const [y, m] = month.split('-').map(Number);
+  const pm = new Date(Date.UTC(y, m - 2, 1)).toISOString().slice(0, 10);
+  const pmEnd = addDays(new Date(Date.UTC(y, m - 1, 0)).toISOString().slice(0, 10), 0);
+  const kd = Number(today.slice(8)) - 1;
+  const pmTo = addDays(pm, kd) > pmEnd ? pmEnd : addDays(pm, kd);
+  out.month = pm >= first ? make('上月同期', span(month + '-01', today), span(pm, pmTo)) : null;
+  return out;
+}
+
 /** YYYY-MM-DD `n` days after the given day key (day keys are already in the configured time zone). */
 function addDays(day, n) {
   return new Date(Date.parse(day + 'T00:00:00Z') + n * 86400000).toISOString().slice(0, 10);
@@ -487,4 +600,4 @@ function resolveRange(timeZone, now, key) {
   };
 }
 
-module.exports = { RANGE_KEYS, isRangeKey, usageSummary, sessionBrief, sessionStats, sessionState, globalInsights, dailyByModel, calendarKeys, requestLog, totalOf, hitRate };
+module.exports = { periodComparisons, RANGE_KEYS, isRangeKey, usageSummary, sessionBrief, sessionStats, sessionState, globalInsights, dailyByModel, calendarKeys, requestLog, totalOf, hitRate };
