@@ -64,6 +64,13 @@ function md(lines) {
   return m;
 }
 
+// A conversation tab of the Claude Code extension: a webview whose viewType contains this.
+const CLAUDE_TAB = 'claudeVSCodePanel';
+// The label Claude Code gives a conversation that has no title yet, and the rule it applies to the others.
+const UNTITLED = 'Claude Code';
+const tabLabel = (title) => (title.length > 25 ? title.substring(0, 24) + '…' : title);
+const NEW_CONVERSATION = '<new conversation>';
+
 class Pulse {
   constructor(context) {
     this.context = context;
@@ -78,7 +85,9 @@ class Pulse {
     this.flash = null;
     this.range = 'all'; // date range of the 全局洞察 tab, chosen in the panel
     this.pinned = context.workspaceState.get('pinned') || null; // session file the status bar is fixed to, or null to follow the newest
-    this.viewing = null; // session of the conversation tab that is active in the editor, or null
+    this.viewing = null; // session of the conversation tab that is active in the editor, NEW_CONVERSATION, or null
+    this.fresh = null; // the new (untitled) conversation: { known: session files seen before it, file: its own once it exists }
+    this.blank = new core.FileState(path.join(core.PROJECTS_DIR, 'new-conversation.jsonl')); // stands in for a session with no transcript yet
     this.usage = null; // today / this week over every session
     this.notified = { ctx: new Set(), cache: new Map() }; // what has already been announced, so each is shown once
     this.fileErrors = new Set();
@@ -106,7 +115,7 @@ class Pulse {
       vscode.commands.registerCommand('ccPulse.refresh', () => this.fullRescan()),
       vscode.commands.registerCommand('ccPulse.openLog', () => this.openLog()),
       vscode.commands.registerCommand('ccPulse.pickSession', () => this.pickSession()),
-      vscode.window.tabGroups.onDidChangeTabs(() => this.onTabChange()),
+      vscode.window.tabGroups.onDidChangeTabs((e) => this.onTabChange(e)),
       vscode.window.tabGroups.onDidChangeTabGroups(() => this.onTabChange()),
       vscode.workspace.onDidChangeConfiguration((e) => {
         if (!e.affectsConfiguration('ccPulse')) return;
@@ -194,6 +203,7 @@ class Pulse {
       this.pinned = null; // the pinned transcript was deleted
       this.context.workspaceState.update('pinned', undefined);
     }
+    if (this.viewing === NEW_CONVERSATION) return NEW_CONVERSATION;
     if (this.viewing && this.states.has(this.viewing)) return this.viewing;
     const dirs = new Set(this.workspaceDirs());
     let best = null;
@@ -260,11 +270,20 @@ class Pulse {
     }
   }
 
+  /** Main session files in memory; `inWorkspace` keeps those of the open folders (where a new conversation starts). */
+  mainFiles(inWorkspace = false) {
+    const dirs = new Set(this.workspaceDirs());
+    return [...this.states.values()].filter((st) => core.isMainSession(st.file) && (!inWorkspace || dirs.has(path.dirname(st.file)))).map((st) => st.file);
+  }
+
   /**
-   * Follows the conversation tab that is active in the editor: a Claude Code tab is titled like its
-   * session, so the session is found by that title. A tab that is not a conversation (a file, a
-   * terminal) leaves the choice as it was; a conversation tab that matches nothing yet (a new one
-   * with no title) falls back to the session with the newest activity.
+   * Follows the Claude Code conversation tab that is active in the editor.
+   *  - The tab is titled like its session (cut to 24 characters plus … when longer than 25), so the
+   *    session is found by that label; a session without a title is labelled by its first prompt.
+   *  - A new conversation has no title and no transcript until the first message: it shows an empty
+   *    session, then binds to the first session file that appears while that tab is the active one.
+   *  - Tabs that are not conversations (files, terminals, other webviews) leave the choice as it was.
+   *  - A conversation tab that matches nothing else falls back to the newest activity.
    */
   syncTab() {
     if (!this.cfg().followTab) {
@@ -272,24 +291,45 @@ class Pulse {
       return;
     }
     const tab = vscode.window.tabGroups.activeTabGroup.activeTab;
-    if (!tab || !tab.input || !('viewType' in tab.input)) return; // not a webview: keep the previous choice
+    const isClaude = tab && tab.input && 'viewType' in tab.input && tab.input.viewType.includes(CLAUDE_TAB);
+    if (!isClaude) return this.learnFiles();
     const label = tab.label.trim();
     let match = null;
     for (const st of this.states.values()) {
-      if (!core.isMainSession(st.file) || (st.title || '').trim() !== label) continue;
-      if (!match || st.mtimeMs > match.mtimeMs) match = st;
+      if (!core.isMainSession(st.file)) continue;
+      const name = (st.title || st.firstPrompt || '').trim();
+      if (name && tabLabel(name) === label && (!match || st.mtimeMs > match.mtimeMs)) match = st;
     }
-    this.viewing = match ? match.file : null;
+    if (match) {
+      this.viewing = match.file;
+      return this.learnFiles();
+    }
+    if (label !== UNTITLED) {
+      this.viewing = null;
+      return;
+    }
+    if (!this.fresh) this.fresh = { known: new Set(this.mainFiles()), file: null };
+    if (!this.fresh.file) {
+      const born = this.mainFiles(true).filter((f) => !this.fresh.known.has(f));
+      if (born.length) this.fresh.file = born.map((f) => this.states.get(f)).sort((a, b) => b.mtimeMs - a.mtimeMs)[0].file;
+    }
+    this.viewing = this.fresh.file || NEW_CONVERSATION;
   }
 
-  onTabChange() {
+  /** While the new-conversation tab is not the active one, session files that appear are not its own. */
+  learnFiles() {
+    if (this.fresh && !this.fresh.file) for (const f of this.mainFiles()) this.fresh.known.add(f);
+  }
+
+  onTabChange(e) {
+    // a newly opened untitled conversation starts over, whichever one was pending before
+    if (e && e.opened && e.opened.some((t) => t.input && 'viewType' in t.input && t.input.viewType.includes(CLAUDE_TAB) && t.label.trim() === UNTITLED)) this.fresh = null;
     const before = this.current;
     this.syncTab();
     const next = this.pickCurrent();
     if (next === before) return;
     this.setCurrent(next);
-    const cfg = this.cfg();
-    this.updateSession(cfg);
+    this.updateSession(this.cfg());
     this.postLog();
   }
 
@@ -338,7 +378,7 @@ class Pulse {
 
   updateSession(cfg) {
     const now = Date.now();
-    const st = this.current && this.states.get(this.current);
+    const st = this.current === NEW_CONVERSATION ? this.blank : this.current && this.states.get(this.current);
     if (!st) {
       this.session = null;
       this.renderStatus();
@@ -352,6 +392,8 @@ class Pulse {
     }
     this.prev = { steps: s.steps, total, pct: s.context.pct };
     s.pinned = !!this.pinned;
+    s.blank = st === this.blank;
+    if (s.blank) s.title = '新对话（还没有消息）';
     this.session = s;
     this.renderStatus();
     this.post({ type: 'session', s, now, cfg: this.viewCfg(cfg) });
@@ -421,8 +463,8 @@ class Pulse {
     }
     this.put(it.state, 'backgroundColor', bg);
     this.put(it.state, 'color', fg);
-    this.put(it.state, 'text', `${this.pinned ? '$(pin)' : '$(pulse)'} ${fmtNum(s.speed.latest)} tok/s${cacheText}`);
-    const stateLine = { generating: '正在生成回复', tool: '正在执行工具（也可能在等你批准权限）', waiting: '等你回复', idle: '空闲' }[kind];
+    this.put(it.state, 'text', `${this.pinned ? '$(pin)' : '$(pulse)'} ${s.blank ? '新对话' : `${fmtNum(s.speed.latest)} tok/s${cacheText}`}`);
+    const stateLine = s.blank ? '新对话，发出第一条消息后开始统计' : { generating: '正在生成回复', tool: '正在执行工具（也可能在等你批准权限）', waiting: '等你回复', idle: '空闲' }[kind];
     this.put(it.state, 'tooltip', md([
       `**${stateLine}** · ${s.model || ''}${s.effort ? ' · ' + s.effort : ''}`,
       `会话：${(s.title || '').replace(/[|\n]/g, ' ').slice(0, 50)}`,
