@@ -575,7 +575,9 @@ class Pulse {
         `本周 ${fmtTok(u.week.total)} · ${fmtUsd(u.week.cost)} · ${u.week.reqs} 次${cmp.week ? ' · ' + fmtDelta(cmp.week) : ''}`,
         '',
         '---',
-        'Cost 费用 = Write 缓存写入 + Read 缓存读取 + Other 其余（未缓存输入和输出）。按 API 价格折算，仅供参考。',
+        'Cost 费用 = Write 写入 + Read 读取 + Other 其余  ',
+        '写入、读取指缓存；其余为未缓存输入和输出  ',
+        '按 API 价格折算，仅供参考。',
       ]));
       if (!it.today._shown) (it.today.show(), (it.today._shown = true));
     } else if (it.today._shown !== false) {
