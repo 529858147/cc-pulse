@@ -279,7 +279,7 @@ function usageSummary(states, timeZone, now) {
   return {
     today: fin(today),
     week: fin(week),
-    models: [...models].map(([model, t]) => ({ model, total: totalOf(t), cost: t.cost })).sort((a, b) => b.total - a.total),
+    models: [...models].map(([model, t]) => ({ model, total: totalOf(t), cost: t.cost, parts: costOf(t) })).sort((a, b) => b.total - a.total),
   };
 }
 
@@ -443,6 +443,22 @@ function dailyByModel(states, timeZone) {
   return out;
 }
 
+/** model -> 24 hourly totals (null for an hour without requests) of today's requests, for the one-day charts. */
+function hourlyToday(states, timeZone, now) {
+  const time = makeTime(timeZone);
+  const today = time.day(now);
+  const out = {};
+  for (const st of states) {
+    for (const r of st.reqs.values()) {
+      if (!r.startTs || time.day(r.startTs) !== today) continue;
+      const hours = out[r.model || 'unknown'] || (out[r.model || 'unknown'] = new Array(24).fill(null));
+      const h = time.hourWeekday(r.startTs)[0];
+      addTokens(hours[h] || (hours[h] = emptyTokens()), r);
+    }
+  }
+  return out;
+}
+
 const SOURCES = { cli: '终端', 'claude-vscode': 'VS Code' };
 function sourceName(entrypoint) {
   if (!entrypoint) return '—';
@@ -600,4 +616,4 @@ function resolveRange(timeZone, now, key) {
   };
 }
 
-module.exports = { periodComparisons, RANGE_KEYS, isRangeKey, usageSummary, sessionBrief, sessionStats, sessionState, globalInsights, dailyByModel, calendarKeys, requestLog, totalOf, hitRate };
+module.exports = { periodComparisons, RANGE_KEYS, isRangeKey, usageSummary, sessionBrief, sessionStats, sessionState, globalInsights, dailyByModel, hourlyToday, calendarKeys, requestLog, totalOf, hitRate };

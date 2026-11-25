@@ -113,6 +113,7 @@ svg polyline.ln { fill: none; stroke-width: 1.5; stroke-linejoin: round; vector-
 svg line.mark { stroke: var(--vscode-charts-orange); stroke-width: 1; stroke-dasharray: 3 2; vector-effect: non-scaling-stroke; }
 svg line.ref { stroke-width: 1; stroke-dasharray: 4 3; vector-effect: non-scaling-stroke; }
 .bar i[data-tip]:hover { filter: brightness(1.25); }
+td.tipcell { cursor: help; text-decoration: underline dotted var(--muted); text-underline-offset: 3px; }
 rect.day { cursor: pointer; }
 rect.day:hover { stroke: var(--muted); stroke-width: 1; }
 rect.day.sel { stroke: var(--vscode-foreground); stroke-width: 1; }

@@ -223,6 +223,13 @@
     return `<div class="bar">${TT.map(([k, n, col]) => `<i data-tip="${seg(k, n)}" style="width:${(c[k] / all) * 100}%;background:${col}"></i>`).join('')}</div>
       <div class="legend">${TT.map(([k, n, col]) => `<span><i style="background:${col}"></i>${n} ${usd(c[k])} ${pct(c[k] / all)}</span>`).join('')}</div>`;
   }
+  /** Hover card splitting one cost into what was paid for, in dollars; null when nothing was priced. */
+  function costTip(title, c) {
+    const all = c.in + c.out + c.cr + c.cw;
+    if (!all) return null;
+    const rows = TT.map(([k, n, col]) => `<i style="background:${col}"></i><span>${n}</span><span>${usd(c[k])}</span><span>${pct(c[k] / all)}</span>`).join('');
+    return { html: `<div class="d">${esc(title)}</div><div class="n">${usd(all)}</div><div class="m">${rows}</div>` };
+  }
   /** "↑38% 较上周同期"; grey when it fell, amber when it grew by half or more. */
   const delta = (c, note = '') => (c ? `<span class="dl ${c.pct >= 0.5 ? 'up' : ''}" title="${esc(c.label + '：' + usd(c.base) + note)}">${c.pct >= 0 ? '↑' : '↓'}${Math.abs(c.pct * 100).toFixed(0)}% 较${esc(c.label)}</span>` : '');
   const when = (t) => new Date(t).toLocaleString('zh-CN', { hour12: false, month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
@@ -526,22 +533,10 @@
   }
 
   // ---------- tab: model usage
-  /** Average output speed per model for each chart column, from the dur/sout totals kept in the daily history. */
-  function speedTrend(models, buckets, cols) {
+  /** Average output speed per model for each chart column, from the dur/sout totals; `speedsOf(model)` gives one value (or null) per column. */
+  function speedTrend(models, speedsOf, cols) {
     const series = models
-      .map((mm) => ({
-        name: modelName(mm),
-        color: modelColor(mm),
-        vals: buckets.map(([, keys]) => {
-          let sout = 0;
-          let dur = 0;
-          for (const k of keys) {
-            const t = (G.daily[k] || {})[mm];
-            if (t && t.dur > 0) (sout += t.sout, (dur += t.dur));
-          }
-          return dur > 0 ? sout / dur : null;
-        }),
-      }))
+      .map((mm) => ({ name: modelName(mm), color: modelColor(mm), vals: speedsOf(mm) }))
       .filter((x) => x.vals.some((v) => v != null));
     const head = '<section><h3>速度趋势<span>tok/s</span></h3>';
     if (!series.length) return head + '<div class="sub">这段时间没有速度记录。速度从 0.7.0 起随每日汇总保存，更早的天没有。</div></section>';
@@ -576,11 +571,25 @@
       <svg viewBox="0 0 300 ${h}" style="height:${h}px">${out}</svg>
       <div class="note">每个点是该模型在这一列的平均输出速率；同一条线突然下滑，才更可能是 API 变慢。</div></section>`;
   }
+  /** 24 chart columns for today, one per hour, with the same hover data as tipOf. */
+  function hourCols(models) {
+    return Array.from({ length: 24 }, (_, h) => {
+      const items = models.map((mm) => ({ name: modelName(mm), color: modelColor(mm), v: ((G.hourly[mm] || [])[h] && total(G.hourly[mm][h])) || 0 }));
+      const sum = items.reduce((a, x) => a + x.v, 0);
+      const reqs = models.reduce((a, mm) => a + ((G.hourly[mm] || [])[h] || { reqs: 0 }).reqs, 0);
+      return {
+        label: String(h),
+        tip: { title: `${G.cal.today.slice(5)} ${String(h).padStart(2, '0')}:00–${String(h + 1).padStart(2, '0')}:00`, sum, reqs, items: items.filter((x) => x.v > 0).sort((a, b) => b.v - a.v) },
+        parts: items.map((x) => ({ v: x.v, c: x.color })),
+      };
+    });
+  }
   function renderModels() {
     if (!G) return '<div class="empty">正在扫描会话记录…</div>';
     tips.length = 0;
     const byMonth = isMonthRange(ui.range);
     const days = rangeDays(ui.range);
+    const hourly = ui.range === 'today';
     // The chosen granularity is kept in ui.gran, but only used where it fits this range.
     const allowed = granularities(days.length);
     const gran = allowed.includes(ui.gran) ? ui.gran : days.length > 31 ? 'week' : 'day';
@@ -595,21 +604,38 @@
       if (!buckets.has(b)) buckets.set(b, []);
       buckets.get(b).push(key);
     }
-    const cols = [...buckets].map(([b, keys]) => {
+    const speedOf = (t) => (t && t.dur > 0 ? t.sout / t.dur : null);
+    // A single day is drawn by the hour, from today's transcripts still on disk (the daily history has no hours).
+    const cols = hourly ? hourCols(models) : [...buckets].map(([b, keys]) => {
       const by = {};
       for (const k of keys) for (const [mm, t] of Object.entries(G.daily[k] || {})) by[mm] = (by[mm] || 0) + total(t);
       const label = gran === 'day' ? (byMonth ? String(Number(b.slice(8))) : b.slice(5)) : gran === 'week' ? b.slice(5) : b;
       const title = gran === 'week' ? `${b} 起一周` : b;
       return { label, tip: tipOf(title, keys), parts: models.map((mm) => ({ v: by[mm] || 0, c: modelColor(mm) })) };
     });
+    const speeds = hourly
+      ? (mm) => cols.map((c, h) => speedOf((G.hourly[mm] || [])[h]))
+      : (mm) => [...buckets].map(([, keys]) => {
+          let sout = 0;
+          let dur = 0;
+          for (const k of keys) {
+            const t = (G.daily[k] || {})[mm];
+            if (t && t.dur > 0) (sout += t.sout, (dur += t.dur));
+          }
+          return dur > 0 ? sout / dur : null;
+        });
     const mt = sumT(models.map((mm) => sumT(per[mm])));
+    const costCell = (mm, e, t) => {
+      const tip = costTip(`${modelName(mm)}${e === 'unknown' ? '' : ' · ' + e}`, costOf(t));
+      return tip ? `<td class="tipcell" data-tip="${tips.push(tip) - 1}">${usd(t.cost)}</td>` : `<td>${usd(t.cost)}</td>`;
+    };
     const rows = models
       .flatMap((mm) => effortTotals(per[mm]).map(([e, t]) => [mm, e, t]))
-      .map(([mm, e, t]) => `<tr><td><span class="legend" style="display:inline"><i style="background:${modelColor(mm)}"></i></span>${esc(modelName(mm))}</td><td class="eff" ${e === 'unknown' ? 'title="这些请求发生在 Claude Code 开始记录 Effort 之前"' : ''}>${e === 'unknown' ? '未记录' : esc(e)}</td><td>${total(t).toLocaleString()}</td><td>${tok(t.in)}</td><td>${tok(t.cr)}</td><td>${pct(hitOf(t))}</td><td>${tok(t.cw)}</td><td>${tok(t.out)}</td><td>${usd(t.cost)}</td><td>${t.reqs ? usd3(t.cost / t.reqs) : '—'}</td><td>${t.dur > 0 ? num(t.sout / t.dur, 0) : '—'}</td><td>${t.reqs}</td></tr>`)
+      .map(([mm, e, t]) => `<tr><td><span class="legend" style="display:inline"><i style="background:${modelColor(mm)}"></i></span>${esc(modelName(mm))}</td><td class="eff" ${e === 'unknown' ? 'title="这些请求发生在 Claude Code 开始记录 Effort 之前"' : ''}>${e === 'unknown' ? '未记录' : esc(e)}</td><td>${total(t).toLocaleString()}</td><td>${tok(t.in)}</td><td>${tok(t.cr)}</td><td>${pct(hitOf(t))}</td><td>${tok(t.cw)}</td><td>${tok(t.out)}</td>${costCell(mm, e, t)}<td>${t.reqs ? usd3(t.cost / t.reqs) : '—'}</td><td>${t.dur > 0 ? num(t.sout / t.dur, 0) : '—'}</td><td>${t.reqs}</td></tr>`)
       .join('');
     const head = byMonth
       ? `<b>${ui.range}</b>`
-      : `<b>${rangeLabel(ui.range)}${days.length ? ` <small>${days[0]}${days.length > 1 ? ' ~ ' + days[days.length - 1] : ''}</small>` : ''}</b>`;
+      : `<b>${rangeLabel(ui.range)}${days.length ? ` <small>${days[0]}${days.length > 1 ? ' ~ ' + days[days.length - 1] : ''}${hourly ? ' · 按小时' : ''}</small>` : ''}</b>`;
     // Only the granularities that apply; with a single one there is nothing to switch.
     const granBar = allowed.length > 1 ? `<span class="seg">${[['day', '天'], ['week', '周'], ['month', '月']].filter(([k]) => allowed.includes(k)).map(([k, n]) => `<button data-gran="${k}" class="${gran === k ? 'on' : ''}">${n}</button>`).join('')}</span>` : '';
     const first = Object.keys(G.daily).sort()[0] || '—';
@@ -619,7 +645,7 @@
       <section><h3>${head}${granBar}</h3>
         <div class="legend" style="margin:0 0 4px">${models.map((mm) => `<span><i style="background:${modelColor(mm)}"></i>${esc(modelName(mm))}</span>`).join('')}</div>
         ${bars(cols, 120)}</section>
-      ${speedTrend(models, [...buckets], cols)}
+      ${speedTrend(models, speeds, cols)}
       <section><h3>按模型<span>${usd(mt.cost)}</span></h3>
         <div class="total"><span>全部模型</span><b>${tok(total(mt))} (100%) · ${mt.reqs.toLocaleString()} 次 · 命中 ${pct(hitOf(mt))}</b></div>
         <div class="scroll"><table><tr><th>模型</th><th>Effort</th><th>总 Token</th><th>未缓存输入</th><th>缓存读取</th><th>命中率</th><th>缓存写入</th><th>输出</th><th>费用</th><th title="费用 ÷ 请求数">成本/次</th><th title="输出 token ÷ 请求总耗时（含等待首字的时间）；没有耗时记录的旧历史不计入">速度 tok/s</th><th>请求</th></tr>${rows || '<tr><td colspan="12">这段时间没有记录</td></tr>'}</table></div></section>
@@ -712,7 +738,7 @@
       S = data.s;
       cfg = data.cfg;
     } else if (data.type === 'global') {
-      G = { g: data.g, daily: data.daily, cal: data.cal, cmp: data.cmp || {} };
+      G = { g: data.g, daily: data.daily, hourly: data.hourly, cal: data.cal, cmp: data.cmp || {} };
     }
     refresh(data.type);
   });

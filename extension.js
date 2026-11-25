@@ -30,6 +30,7 @@ function fmtNum(x, d = 1) {
 function fmtUsd(x) {
   return x == null ? '—' : x > 0 && x < 0.01 ? '<$0.01' : '$' + x.toFixed(2);
 }
+const costOf = (t) => ({ in: t.cIn, out: t.cOut, cr: t.cCr, cw: t.cCw });
 /** "↑38% 较上周同期", or '' when there is no baseline to compare with. */
 function fmtDelta(c, note = '') {
   return c ? `${c.pct >= 0 ? '↑' : '↓'}${Math.abs(c.pct * 100).toFixed(0)}% 较${c.label}${note}` : '';
@@ -420,7 +421,7 @@ class Pulse {
     if (merge && this.history.merge(stats.dailyByModel(all, cfg.timeZone))) await this.history.save();
     const tz = cfg.timeZone || Intl.DateTimeFormat().resolvedOptions().timeZone;
     const keys = stats.calendarKeys(cfg.timeZone, now);
-    this.global = { g, daily: this.history.days, cal: { ...keys, tz }, cmp: stats.periodComparisons(this.history.days, keys) };
+    this.global = { g, daily: this.history.days, cal: { ...keys, tz }, hourly: stats.hourlyToday(all, cfg.timeZone, now), cmp: stats.periodComparisons(this.history.days, keys) };
     this.post({ type: 'global', ...this.global, now });
   }
 
@@ -561,6 +562,11 @@ class Pulse {
         ...(cmp.week ? [`| | ${fmtDelta(cmp.week)} |`] : []),
         `| 今日缓存命中率 | ${fmtPct(u.today.hit)} |`,
         ...u.models.map((m) => `| ${modelName(m.model)} | ${fmtTok(m.total)} · ${fmtUsd(m.cost)} |`),
+        '',
+        '| 今日缓存费用 | 写入 | 读取 |',
+        '|---|---:|---:|',
+        `| 合计 | ${fmtUsd(costOf(u.today).cw)} | ${fmtUsd(costOf(u.today).cr)} |`,
+        ...u.models.map((m) => `| ${modelName(m.model)} | ${fmtUsd(m.parts.cw)} | ${fmtUsd(m.parts.cr)} |`),
         '',
         '费用按 API 价格折算，仅供参考。',
       ]));
