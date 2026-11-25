@@ -558,7 +558,7 @@ class Pulse {
         `### ${fmtUsd(u.today.cost)}`,
         [`${fmtTok(u.today.total)} Token`, `${u.today.reqs} 次`, cmp.today && fmtDelta(cmp.today, '（今日未结束）')].filter(Boolean).join(' · '),
         '',
-        '| 模型 | Token | 费用 | 缓存写入 | 缓存读取 | 输入+输出 |',
+        '| 模型 | Token | 费用 | 写入 | 读取 | 其余 |',
         '|:---|---:|---:|---:|---:|---:|',
         ...u.models.map((m) => `| ${modelName(m.model)} | ${fmtTok(m.total)} | ${fmtUsd(m.cost)} | ${fmtUsd(m.parts.cw)} | ${fmtUsd(m.parts.cr)} | ${fmtUsd(m.parts.in + m.parts.out)} |`),
         `| **合计** | **${fmtTok(u.today.total)}** | **${fmtUsd(u.today.cost)}** | **${fmtUsd(tc.cw)}** | **${fmtUsd(tc.cr)}** | **${fmtUsd(tc.in + tc.out)}** |`,
@@ -567,7 +567,7 @@ class Pulse {
         `本周 ${fmtTok(u.week.total)} · ${fmtUsd(u.week.cost)} · ${u.week.reqs} 次${cmp.week ? ' · ' + fmtDelta(cmp.week) : ''}`,
         '',
         '---',
-        '费用按 API 价格折算，仅供参考。',
+        '费用 = 缓存写入 + 缓存读取 + 其余（未缓存输入和输出）。按 API 价格折算，仅供参考。',
       ]));
       if (!it.today._shown) (it.today.show(), (it.today._shown = true));
     } else if (it.today._shown !== false) {
