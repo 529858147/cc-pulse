@@ -31,6 +31,13 @@ function fmtUsd(x) {
   return x == null ? '—' : x > 0 && x < 0.01 ? '<$0.01' : '$' + x.toFixed(2);
 }
 const costOf = (t) => ({ in: t.cIn, out: t.cOut, cr: t.cCr, cw: t.cCw });
+/** Monospace table for a hover: first column left, the rest right-aligned. ASCII only, so columns line up whatever font fills in. */
+function monoTable(head, rows, foot) {
+  const all = [head, ...rows, foot];
+  const w = head.map((_, i) => Math.max(...all.map((r) => r[i].length)));
+  const line = (r) => r.map((c, i) => (i ? c.padStart(w[i]) : c.padEnd(w[i]))).join('  ');
+  return ['```text', line(head), '-'.repeat(line(head).length), ...rows.map(line), '-'.repeat(line(head).length), line(foot), '```'];
+}
 /** "↑38% 较上周同期", or '' when there is no baseline to compare with. */
 function fmtDelta(c, note = '') {
   return c ? `${c.pct >= 0 ? '↑' : '↓'}${Math.abs(c.pct * 100).toFixed(0)}% 较${c.label}${note}` : '';
@@ -558,16 +565,17 @@ class Pulse {
         `### ${fmtUsd(u.today.cost)}`,
         [`${fmtTok(u.today.total)} Token`, `${u.today.reqs} 次`, cmp.today && fmtDelta(cmp.today, '（今日未结束）')].filter(Boolean).join(' · '),
         '',
-        '| 模型 | Token | 费用 | 写入 | 读取 | 其余 |',
-        '|:---|---:|---:|---:|---:|---:|',
-        ...u.models.map((m) => `| ${modelName(m.model)} | ${fmtTok(m.total)} | ${fmtUsd(m.cost)} | ${fmtUsd(m.parts.cw)} | ${fmtUsd(m.parts.cr)} | ${fmtUsd(m.parts.in + m.parts.out)} |`),
-        `| **合计** | **${fmtTok(u.today.total)}** | **${fmtUsd(u.today.cost)}** | **${fmtUsd(tc.cw)}** | **${fmtUsd(tc.cr)}** | **${fmtUsd(tc.in + tc.out)}** |`,
+        ...monoTable(
+          ['Model', 'Token', 'Cost', 'Write', 'Read', 'Other'],
+          u.models.map((m) => [modelName(m.model), fmtTok(m.total), fmtUsd(m.cost), fmtUsd(m.parts.cw), fmtUsd(m.parts.cr), fmtUsd(m.parts.in + m.parts.out)]),
+          ['Total', fmtTok(u.today.total), fmtUsd(u.today.cost), fmtUsd(tc.cw), fmtUsd(tc.cr), fmtUsd(tc.in + tc.out)],
+        ),
         '',
         `缓存命中率 ${fmtPct(u.today.hit)}  `,
         `本周 ${fmtTok(u.week.total)} · ${fmtUsd(u.week.cost)} · ${u.week.reqs} 次${cmp.week ? ' · ' + fmtDelta(cmp.week) : ''}`,
         '',
         '---',
-        '费用 = 缓存写入 + 缓存读取 + 其余（未缓存输入和输出）。按 API 价格折算，仅供参考。',
+        'Cost 费用 = Write 缓存写入 + Read 缓存读取 + Other 其余（未缓存输入和输出）。按 API 价格折算，仅供参考。',
       ]));
       if (!it.today._shown) (it.today.show(), (it.today._shown = true));
     } else if (it.today._shown !== false) {
