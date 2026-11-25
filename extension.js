@@ -551,23 +551,22 @@ class Pulse {
     const cmp = (this.global && this.global.cmp) || {};
     if (cfg.showToday && u) {
       this.put(it.today, 'text', `$(graph) 今日 ${fmtTok(u.today.total)} · ${fmtUsd(u.today.cost)}`);
+      const tc = costOf(u.today);
       this.put(it.today, 'tooltip', md([
-        '**用量** · 全部会话',
+        '**今日用量** · 全部会话',
         '',
-        '| | |',
-        '|---|---:|',
-        `| 今日 | **${fmtTok(u.today.total)}** · ${fmtUsd(u.today.cost)} · ${u.today.reqs} 次 |`,
-        ...(cmp.today ? [`| | ${fmtDelta(cmp.today, '（今日未结束）')} |`] : []),
-        `| 本周 | ${fmtTok(u.week.total)} · ${fmtUsd(u.week.cost)} · ${u.week.reqs} 次 |`,
-        ...(cmp.week ? [`| | ${fmtDelta(cmp.week)} |`] : []),
-        `| 今日缓存命中率 | ${fmtPct(u.today.hit)} |`,
-        ...u.models.map((m) => `| ${modelName(m.model)} | ${fmtTok(m.total)} · ${fmtUsd(m.cost)} |`),
+        `### ${fmtUsd(u.today.cost)}`,
+        [`${fmtTok(u.today.total)} Token`, `${u.today.reqs} 次`, cmp.today && fmtDelta(cmp.today, '（今日未结束）')].filter(Boolean).join(' · '),
         '',
-        '| 今日缓存费用 | 写入 | 读取 |',
-        '|---|---:|---:|',
-        `| 合计 | ${fmtUsd(costOf(u.today).cw)} | ${fmtUsd(costOf(u.today).cr)} |`,
-        ...u.models.map((m) => `| ${modelName(m.model)} | ${fmtUsd(m.parts.cw)} | ${fmtUsd(m.parts.cr)} |`),
+        '| 模型 | Token | 费用 | 缓存写入 | 缓存读取 | 输入+输出 |',
+        '|:---|---:|---:|---:|---:|---:|',
+        ...u.models.map((m) => `| ${modelName(m.model)} | ${fmtTok(m.total)} | ${fmtUsd(m.cost)} | ${fmtUsd(m.parts.cw)} | ${fmtUsd(m.parts.cr)} | ${fmtUsd(m.parts.in + m.parts.out)} |`),
+        `| **合计** | **${fmtTok(u.today.total)}** | **${fmtUsd(u.today.cost)}** | **${fmtUsd(tc.cw)}** | **${fmtUsd(tc.cr)}** | **${fmtUsd(tc.in + tc.out)}** |`,
         '',
+        `缓存命中率 ${fmtPct(u.today.hit)}  `,
+        `本周 ${fmtTok(u.week.total)} · ${fmtUsd(u.week.cost)} · ${u.week.reqs} 次${cmp.week ? ' · ' + fmtDelta(cmp.week) : ''}`,
+        '',
+        '---',
         '费用按 API 价格折算，仅供参考。',
       ]));
       if (!it.today._shown) (it.today.show(), (it.today._shown = true));
