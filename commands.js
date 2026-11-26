@@ -1,8 +1,10 @@
 'use strict';
 // Extracts the program names a Bash tool call runs, for the "命令执行" ranking.
-// `coke.sh run <project> '<PowerShell>'` runs PowerShell on the Windows PC "coke"; those commands
-// are reported as "coke ▸ <name>" so the ranking shows what actually ran instead of coke.sh itself.
+// `win-work.sh run <project> '<PowerShell>'` runs PowerShell on the Windows PC "win-work"; those commands
+// are reported as "win-work ▸ <name>" so the ranking shows what actually ran instead of win-work.sh itself.
 const path = require('path');
+// coke.sh is the pre-rename name; old sessions still contain it.
+const WIN_SCRIPTS = new Set(["win-work.sh", "coke.sh"]);
 
 // Shell plumbing that says nothing about what work was done.
 const BASH_SKIP = new Set(['cd', 'pushd', 'popd', 'echo', 'printf', 'true', 'false', 'export', 'set', 'unset', 'source', '.',
@@ -181,9 +183,9 @@ function bashCommands(text, depth = 0) {
     const name = path.basename(cleanWord(t[i]));
     if (!name || BASH_SKIP.has(name) || /^[-<>0-9&$]/.test(name)) continue;
     const args = t.slice(i + 1);
-    if (name === 'coke.sh') {
-      if (args[0] === 'run' && args.length >= 3) out.push(...psCommands(args.slice(2).join(' ')).map((n) => 'coke ▸ ' + n));
-      else out.push('coke.sh ' + (args[0] || ''));
+    if (WIN_SCRIPTS.has(name)) {
+      if (args[0] === 'run' && args.length >= 3) out.push(...psCommands(args.slice(2).join(' ')).map((n) => 'win-work ▸ ' + n));
+      else out.push(name + ' ' + (args[0] || ''));
     } else if ((name === 'bash' || name === 'sh') && args[0] === '-c' && args[1] && depth < 2) {
       out.push(...bashCommands(args[1], depth + 1));
     } else out.push(name);
@@ -191,12 +193,12 @@ function bashCommands(text, depth = 0) {
   return out;
 }
 
-/** The project argument of `coke.sh run <project> ...`, if the command has one. */
+/** The project argument of `win-work.sh run <project> ...`, if the command has one. */
 function cokeProjects(text) {
   const out = [];
   for (const seg of splitSegments(stripHeredocs(text), false)) {
     const t = tokenize(seg.text, false);
-    const i = t.findIndex((w) => path.basename(w) === 'coke.sh');
+    const i = t.findIndex((w) => WIN_SCRIPTS.has(path.basename(w)));
     // `coke.sh run "$p" ...` names the project through a variable; that is not a project name.
     if (i >= 0 && t[i + 1] === 'run' && t[i + 2] && !t[i + 2].startsWith('$')) out.push(t[i + 2]);
   }

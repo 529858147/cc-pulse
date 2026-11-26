@@ -148,3 +148,65 @@ button.small:disabled { opacity: 0.4; cursor: default; }
 .donut .fg { stroke: var(--accent); stroke-linecap: butt; }
 .card.warn .donut .fg { stroke: var(--warn); }
 .card.alert .donut .fg { stroke: var(--alert); }
+
+/* projects tab: project folders with their sessions underneath; row actions show on hover */
+svg.ico { display: inline-block; width: 14px; height: 14px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; overflow: visible; }
+button.ib { display: inline-grid; place-items: center; width: 22px; height: 22px; padding: 0; border: 0; border-radius: 4px; background: transparent; color: var(--muted); cursor: pointer; }
+button.ib:hover { background: var(--hover); color: var(--vscode-foreground); }
+button.ib.on { color: var(--accent); }
+.phead { display: flex; align-items: center; justify-content: space-between; margin: 10px 0 0; font-size: 12px; font-weight: 600; }
+.ptools { display: inline-flex; gap: 2px; }
+.pcap { margin: 8px 0 2px; font-size: 11px; color: var(--muted); }
+.proj { display: flex; align-items: center; gap: 6px; height: 28px; margin-top: 4px; padding: 0 2px 0 4px; border-radius: 4px; color: var(--muted); cursor: pointer; user-select: none; }
+.proj:hover { background: var(--hover); color: var(--vscode-foreground); }
+.proj .pn, .sugrow .pn { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pc { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.pcost { min-width: 44px; padding-right: 4px; text-align: right; font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.pact { display: none; gap: 0; }
+.proj:hover .pact { display: inline-flex; }
+.proj:hover .pcost { display: none; }
+#plist.dragging .proj[data-drop] { outline: 1px dashed var(--line); outline-offset: -1px; }
+.pintro { margin-top: 8px; padding: 8px; border: 1px solid var(--line); border-radius: 4px; font-size: 12px; }
+.pintro p { margin: 0 0 4px; color: var(--muted); line-height: 1.5; }
+.sugrow { display: flex; align-items: center; gap: 6px; height: 26px; color: var(--vscode-foreground); }
+.sugg { display: flex; flex-wrap: wrap; gap: 4px; }
+.pfnote { display: flex; align-items: center; justify-content: space-between; margin-top: 6px; font-size: 11px; color: var(--muted); }
+.srow { display: flex; align-items: center; gap: 6px; height: 28px; padding: 0 2px 0 22px; border-radius: 4px; cursor: pointer; position: relative; user-select: none; }
+.srow:hover, .srow.cur { background: var(--hover); }
+.srow .ti { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.srow .ag { min-width: 28px; text-align: right; font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; padding-right: 4px; }
+.sact { display: none; gap: 0; }
+.srow:hover .sact { display: inline-flex; }
+.srow:hover .ag { display: none; }
+.rdot { position: absolute; left: 9px; width: 6px; height: 6px; border-radius: 50%; background: var(--vscode-charts-green); }
+.pempty { padding: 4px 4px 4px 22px; color: var(--muted); font-size: 11px; }
+.pmore { padding: 4px 4px 4px 22px; color: var(--muted); font-size: 11px; cursor: pointer; }
+.pmore:hover { color: var(--vscode-foreground); }
+#plist [data-drop].over { outline: 1px solid var(--accent); outline-offset: -1px; background: var(--hover); }
+
+#menu { position: fixed; z-index: 20; min-width: 160px; padding: 4px; font-size: 12px; background: var(--vscode-menu-background, var(--vscode-editorWidget-background)); color: var(--vscode-menu-foreground, var(--vscode-foreground)); border: 1px solid var(--vscode-menu-border, var(--line)); border-radius: 5px; box-shadow: 0 2px 8px var(--vscode-widget-shadow, rgba(0, 0, 0, 0.3)); }
+#menu[hidden] { display: none; }
+#menu .mi { display: flex; align-items: center; gap: 6px; height: 26px; padding: 0 10px 0 6px; border-radius: 3px; cursor: pointer; white-space: nowrap; }
+#menu .mi:hover { background: var(--vscode-menu-selectionBackground, var(--hover)); color: var(--vscode-menu-selectionForeground, inherit); }
+#menu .ck { display: inline-flex; width: 14px; color: var(--accent); }
+#menu .msep { height: 1px; margin: 4px 2px; background: var(--line); }
+#menu .mh { padding: 4px 10px 2px 26px; font-size: 11px; color: var(--muted); }
+#toast { position: fixed; left: 50%; bottom: 14px; z-index: 40; transform: translateX(-50%); max-width: calc(100% - 24px); padding: 5px 12px; font-size: 12px; border-radius: 4px; background: var(--vscode-editorWidget-background); border: 1px solid var(--line); box-shadow: 0 2px 8px var(--vscode-widget-shadow, rgba(0, 0, 0, 0.3)); }
+#toast[hidden] { display: none; }
+
+/* project dialog */
+#dlgmask { position: fixed; inset: 0; z-index: 30; display: flex; align-items: flex-start; justify-content: center; padding-top: 48px; background: rgba(0, 0, 0, 0.45); }
+#dlgmask[hidden] { display: none; }
+.dlg { width: calc(100% - 20px); max-width: 320px; padding: 12px; background: var(--vscode-editor-background); border: 1px solid var(--line); border-radius: 6px; }
+.dlg h3 { margin: 0 0 6px; font-size: 13px; }
+.dlg label { display: block; margin: 8px 0 3px; font-size: 11px; color: var(--muted); }
+.dlg input[type='text'], .dlg input:not([type]) { width: 100%; box-sizing: border-box; min-width: 0; background: var(--vscode-input-background); color: var(--vscode-input-foreground); border: 1px solid var(--vscode-input-border, var(--line)); border-radius: 3px; padding: 3px 6px; font-size: 12px; }
+.addrow { display: flex; gap: 4px; }
+.addrow input { flex: 1; }
+.addrow button, .dbtns button, .sugg button { flex: none; white-space: nowrap; }
+.chip { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; padding: 1px 2px 1px 6px; border: 1px solid var(--line); border-radius: 3px; font-family: var(--vscode-editor-font-family, monospace); font-size: 11px; }
+.chip span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chip em { font-style: normal; color: var(--warn); font-family: var(--vscode-font-family); }
+.derr { min-height: 14px; margin-top: 6px; font-size: 11px; color: var(--vscode-errorForeground, var(--alert)); }
+.dbtns { display: flex; justify-content: flex-end; gap: 6px; margin-top: 6px; }
+button.small.go { color: var(--vscode-button-foreground); background: var(--vscode-button-background); border-color: var(--vscode-button-background); }

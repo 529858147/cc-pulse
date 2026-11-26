@@ -300,7 +300,11 @@ function sessionBrief(st, subs, projectRoots, now) {
   };
 }
 
-/** Rankings, totals and the session list over every transcript still on disk. */
+/**
+ * Rankings, totals and the session list over every transcript still on disk.
+ * opts.only: a Set of main session files to restrict everything to (a project), or null for all.
+ * opts.projectName(st): the registered project of a main session, or null to fall back to projectOf.
+ */
 function globalInsights(states, opts, now) {
   const time = makeTime(opts.timeZone);
   const range = resolveRange(opts.timeZone, now, opts.range);
@@ -327,7 +331,8 @@ function globalInsights(states, opts, now) {
   let activeTotal = 0;
   let earliest = Infinity;
   const sessions = [];
-  for (const [, { st, subs }] of bySession) {
+  for (const [key, { st, subs }] of bySession) {
+    if (opts.only && !opts.only.has(key)) continue;
     const all = [st, ...subs].filter(Boolean);
     const t = emptyTokens();
     for (const s of all) {
@@ -379,7 +384,7 @@ function globalInsights(states, opts, now) {
     for (const e of cacheMisses(allMain, st.compactTs)) if (inRange(e.t)) missEvents.push({ ...e, session: title });
     const act = activeMs(main);
     activeTotal += act;
-    const project = projectOf(st, opts.projectRoots);
+    const project = (opts.projectName && opts.projectName(st)) || projectOf(st, opts.projectRoots);
     const pe = projects.get(project) || { tokens: 0, sessions: 0 };
     pe.tokens += totalOf(t);
     pe.sessions++;
@@ -421,6 +426,19 @@ function globalInsights(states, opts, now) {
     cmds: [...cmds.values()].sort((a, b) => b.n - a.n).slice(0, 12).map((e) => ({ name: e.name, value: e.n })),
     sessions,
   };
+}
+
+/** Main session file -> estimated cost of its requests (subagents included) in the range. */
+function sessionCosts(states, timeZone, rangeKey, now) {
+  const inRange = resolveRange(timeZone, now, rangeKey).test;
+  const out = new Map();
+  for (const st of states) {
+    const key = st.isSub ? sessionFileOf(st.file) : st.file;
+    let cost = 0;
+    for (const r of st.reqs.values()) if (inRange(r.startTs)) cost += requestCost(r) || 0;
+    if (cost) out.set(key, (out.get(key) || 0) + cost);
+  }
+  return out;
 }
 
 /** day -> model -> token totals, for every request still on disk. */
@@ -616,4 +634,4 @@ function resolveRange(timeZone, now, key) {
   };
 }
 
-module.exports = { periodComparisons, RANGE_KEYS, isRangeKey, usageSummary, sessionBrief, sessionStats, sessionState, globalInsights, dailyByModel, hourlyToday, calendarKeys, requestLog, totalOf, hitRate };
+module.exports = { periodComparisons, RANGE_KEYS, isRangeKey, usageSummary, sessionBrief, sessionStats, sessionState, globalInsights, sessionCosts, dailyByModel, hourlyToday, calendarKeys, requestLog, totalOf, hitRate };

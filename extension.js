@@ -1,10 +1,13 @@
 'use strict';
 const vscode = require('vscode');
 const crypto = require('crypto');
+const fsp = require('fs').promises;
+const os = require('os');
 const path = require('path');
 const core = require('./core');
 const stats = require('./stats');
 const { History } = require('./history');
+const { Projects, isWithin } = require('./projects');
 
 // The transcript directory is listed (new sessions, deleted files) and global stats are recomputed every Nth poll.
 const RESCAN_EVERY = 10;
@@ -81,6 +84,10 @@ const NEW_CONVERSATION = '<new conversation>';
 const EDITOR_ENTRY = 'claude-vscode'; // entrypoint of sessions started from the editor panel
 const BIND_SLACK_MS = 15000; // a session file may be created slightly before the tab is seen to be untitled
 const isClaudeTab = (t) => !!(t && t.input && 'viewType' in t.input && t.input.viewType.includes(CLAUDE_TAB));
+// The Claude Code extension's command that opens (resumes) a session in an editor tab. It only finds sessions
+// of the open workspace folders (and their git worktrees), so others are resumed in a terminal instead.
+const CLAUDE_OPEN = 'claude-vscode.primaryEditor.open';
+const UNASSIGNED = '-'; // 全局洞察 filter value for the sessions that belong to no project
 
 class Pulse {
   constructor(context) {
@@ -90,6 +97,11 @@ class Pulse {
     this.session = null; // sessionStats of the current session
     this.global = null; // { g, daily, cal }
     this.history = new History(context.globalStorageUri.fsPath);
+    this.projects = new Projects(context.globalStorageUri.fsPath);
+    this.projSig = null; // what the sidebar's 项目 tab last received, so an unchanged list is not posted again
+    this.projPruned = false;
+    this.gProject = ''; // 全局洞察 restricted to a project id, UNASSIGNED, or '' for every session
+    this.rangeCosts = new Map(); // main session file -> cost in the selected range, for the 项目 tab
     this.tick = 0;
     this.busy = false;
     this.prev = null;
@@ -143,6 +155,7 @@ class Pulse {
   async start() {
     try {
       await this.history.load();
+      await this.projects.load();
     } catch (e) {
       this.showError(e);
       return;
@@ -257,7 +270,12 @@ class Pulse {
       if (rescan) {
         await this.updateGlobal(cfg);
         await this.saveCaches();
+        if (!this.projPruned) {
+          this.projPruned = true;
+          await this.projects.prune(new Set(this.mainFiles().map((f) => path.basename(f, '.jsonl'))));
+        }
       }
+      this.postProjects();
     } catch (e) {
       this.showError(e);
     } finally {
@@ -279,6 +297,29 @@ class Pulse {
         if (e.code !== 'ENOENT') throw e; // the transcript was deleted meanwhile
       }
     }
+  }
+
+  /** Main session file -> its subagent transcripts. */
+  subsByMain() {
+    const out = new Map();
+    for (const st of this.states.values()) {
+      if (!st.isSub) continue;
+      const key = core.sessionFileOf(st.file);
+      if (!out.has(key)) out.set(key, []);
+      out.get(key).push(st);
+    }
+    return out;
+  }
+
+  /** Sessions run by a program rather than typed by the user: SDK entry points, or started in a temporary folder. */
+  isAutomated(st) {
+    return (!!st.entry && st.entry.startsWith('sdk')) || (!!st.cwd && isWithin(os.tmpdir(), st.cwd));
+  }
+
+  /** Name of the registered project a main session belongs to, or null. */
+  projectName(st, subsOf) {
+    const id = this.projects.classify(st, subsOf.get(st.file) || []).project;
+    return id ? this.projects.byId(id).name : null;
   }
 
   /** Main session files in memory; `inWorkspace` keeps those of the open folders (where a new conversation starts). */
@@ -352,6 +393,7 @@ class Pulse {
     this.setCurrent(next);
     this.updateSession(this.cfg());
     this.postLog();
+    this.postProjects();
   }
 
   setCurrent(file) {
@@ -364,13 +406,7 @@ class Pulse {
   async pickSession() {
     const cfg = this.cfg();
     const now = Date.now();
-    const subsOf = new Map();
-    for (const st of this.states.values()) {
-      if (!st.isSub) continue;
-      const key = core.sessionFileOf(st.file);
-      if (!subsOf.has(key)) subsOf.set(key, []);
-      subsOf.get(key).push(st);
-    }
+    const subsOf = this.subsByMain();
     const briefs = [...this.states.values()]
       .filter((st) => core.isMainSession(st.file))
       .sort((a, b) => b.mtimeMs - a.mtimeMs)
@@ -407,6 +443,7 @@ class Pulse {
     }
     const subs = [...this.states.values()].filter((s) => s.isSub && core.sessionFileOf(s.file) === st.file);
     const s = stats.sessionStats(st, subs, cfg.windows, now);
+    s.projectName = st === this.blank ? null : this.projectName(st, new Map([[st.file, subs]]));
     const total = stats.totalOf(s.tokens) + stats.totalOf(s.sub);
     if (this.prev && s.steps > this.prev.steps) {
       this.flash = { until: now + FLASH_MS, tokens: total - this.prev.total, ctx: (s.context.pct || 0) - (this.prev.pct || 0) };
@@ -424,18 +461,45 @@ class Pulse {
   async updateGlobal(cfg, merge = true) {
     const now = Date.now();
     const all = [...this.states.values()];
-    const g = stats.globalInsights(all, { ...cfg, range: this.range }, now);
+    const subsOf = this.subsByMain();
+    let only = null;
+    if (this.gProject) {
+      only = new Set();
+      for (const st of all) {
+        if (!core.isMainSession(st.file)) continue;
+        const id = this.projects.classify(st, subsOf.get(st.file) || []).project;
+        if (this.gProject === UNASSIGNED ? !id && !this.isAutomated(st) : id === this.gProject) only.add(st.file);
+      }
+    }
+    const g = stats.globalInsights(all, { ...cfg, range: this.range, only, projectName: (st) => this.projectName(st, subsOf) }, now);
+    this.rangeCosts = stats.sessionCosts(all, cfg.timeZone, this.range, now);
     if (merge && this.history.merge(stats.dailyByModel(all, cfg.timeZone))) await this.history.save();
     const tz = cfg.timeZone || Intl.DateTimeFormat().resolvedOptions().timeZone;
     const keys = stats.calendarKeys(cfg.timeZone, now);
-    this.global = { g, daily: this.history.days, cal: { ...keys, tz }, hourly: stats.hourlyToday(all, cfg.timeZone, now), cmp: stats.periodComparisons(this.history.days, keys) };
+    this.global = { g, gproj: this.gProject, daily: this.history.days, cal: { ...keys, tz }, hourly: stats.hourlyToday(all, cfg.timeZone, now), cmp: stats.periodComparisons(this.history.days, keys) };
     this.post({ type: 'global', ...this.global, now });
   }
 
   setRange(range) {
     if (!stats.isRangeKey(range) || range === this.range) return;
     this.range = range;
-    if (this.global) this.updateGlobal(this.cfg(), false).catch((e) => this.showError(e));
+    this.refreshGlobal();
+  }
+
+  /** `v` comes from the webview: a project id, UNASSIGNED or ''; anything else (e.g. a removed project) means all. */
+  setGProject(v) {
+    const next = v === UNASSIGNED || (typeof v === 'string' && this.projects.byId(v)) ? v : '';
+    if (next === this.gProject) return;
+    this.gProject = next;
+    this.refreshGlobal();
+  }
+
+  /** Recomputes the insights without touching the history, e.g. for another range, filter or project setup. */
+  refreshGlobal() {
+    if (!this.global) return;
+    this.updateGlobal(this.cfg(), false)
+      .then(() => this.postProjects())
+      .catch((e) => this.showError(e));
   }
 
   viewCfg(cfg) {
@@ -489,7 +553,8 @@ class Pulse {
     const stateLine = s.blank ? '新对话，发出第一条消息后开始统计' : { generating: '正在生成回复', tool: '正在执行工具（也可能在等你批准权限）', waiting: '等你回复', idle: '空闲' }[kind];
     this.put(it.state, 'tooltip', md([
       `**${stateLine}** · ${s.model || ''}${s.effort ? ' · ' + s.effort : ''}`,
-      `会话：${(s.title || '').replace(/[|\n]/g, ' ').slice(0, 50)}`,
+      `会话：${(s.title || '').replace(/[|\n]/g, ' ').slice(0, 50)}${s.projectName ? '  ' : ''}`, // two spaces: a line break in Markdown
+      s.projectName ? `项目：${s.projectName.replace(/[|\n]/g, ' ')}` : '',
       '',
       '| | |',
       '|---|---:|',
@@ -683,12 +748,15 @@ class Pulse {
     view.webview.onDidReceiveMessage((m) => {
       if (m && m.type === 'ready') {
         this.setRange(m.range);
+        this.setGProject(m.gproj);
         this.pushAll();
       } else if (m && m.type === 'range') this.setRange(m.range);
+      else if (m && m.type === 'gproj') this.setGProject(m.project);
       else if (m && m.type === 'refresh') this.fullRescan();
       else if (m && m.type === 'openLog') this.openLog();
       else if (m && m.type === 'pick') this.pickSession();
       else if (m && m.type === 'query') this.setLogQuery('sidebar', view.webview, () => view.visible, m.q);
+      else if (m && typeof m.type === 'string' && /^(proj|sess)|^copy$/.test(m.type)) this.projMessage(m);
     });
     view.onDidChangeVisibility(() => {
       if (!view.visible) return;
@@ -705,6 +773,170 @@ class Pulse {
     const now = Date.now();
     if (this.session) this.post({ type: 'session', s: this.session, now, cfg: this.viewCfg(this.cfg()) });
     if (this.global) this.post({ type: 'global', ...this.global, now });
+    this.postProjects(true);
+  }
+
+  // ---- projects tab
+
+  /** The main session with this id; the id comes from the webview, so it must name a session that exists. */
+  sessionById(id) {
+    const st = typeof id === 'string' && [...this.states.values()].find((s) => core.isMainSession(s.file) && path.basename(s.file, '.jsonl') === id);
+    if (!st) throw new Error('会话已不存在（可能被 Claude Code 清理了）');
+    return st;
+  }
+
+  /** Every main session that has at least one message, with its subagent transcripts. */
+  mainSessions() {
+    const subsOf = this.subsByMain();
+    return [...this.states.values()].filter((st) => core.isMainSession(st.file) && (st.reqs.size || st.turns)).map((st) => ({ st, subs: subsOf.get(st.file) || [] }));
+  }
+
+  /** Projects, and every session that has at least one message, with the project it belongs to and why. */
+  projectsPayload() {
+    const now = Date.now();
+    const pinned = new Set(this.projects.pins);
+    const archived = new Set(this.projects.archived);
+    const cur = this.current && this.current !== NEW_CONVERSATION ? path.basename(this.current, '.jsonl') : null;
+    const sessions = this.mainSessions().map(({ st, subs }) => {
+      const id = path.basename(st.file, '.jsonl');
+      const c = this.projects.classify(st, subs);
+      return {
+        id,
+        title: st.title || st.firstPrompt || '(无标题)',
+        project: c.project,
+        how: c.how,
+        pinned: pinned.has(id),
+        archived: archived.has(id),
+        auto: this.isAutomated(st),
+        last: st.mtimeMs,
+        created: st.firstTs || st.mtimeMs,
+        state: stats.sessionState(st, now).kind,
+        cost: this.rangeCosts.get(st.file) || 0,
+      };
+    });
+    return { type: 'projects', projects: this.projects.list, sessions, current: cur, range: this.range };
+  }
+
+  postProjects(force = false) {
+    if (!this.view || !this.view.visible) return;
+    const msg = this.projectsPayload();
+    const sig = JSON.stringify(msg);
+    if (!force && sig === this.projSig) return;
+    this.projSig = sig;
+    this.view.webview.postMessage({ ...msg, now: Date.now() });
+  }
+
+  /** Folders to offer in the new-project dialog that still exist. */
+  async suggestions() {
+    const items = this.projects.suggest(this.mainSessions().filter(({ st }) => !this.isAutomated(st)));
+    const out = [];
+    for (const it of items) {
+      try {
+        if ((await fsp.stat(it.path)).isDirectory()) out.push({ ...it, name: path.basename(it.path) });
+      } catch (e) {
+        if (e.code !== 'ENOENT') throw e;
+      }
+    }
+    return out;
+  }
+
+  /**
+   * Opens a session: in a Claude Code editor tab when its transcript belongs to an open workspace folder (the only
+   * ones that extension finds) and the extension is installed, otherwise with `claude --resume` in a terminal
+   * started in the session's folder.
+   */
+  async openSession(st, terminal) {
+    const id = path.basename(st.file, '.jsonl');
+    if (!terminal && this.workspaceDirs().includes(path.dirname(st.file)) && (await vscode.commands.getCommands(true)).includes(CLAUDE_OPEN)) {
+      await vscode.commands.executeCommand(CLAUDE_OPEN, id);
+      return;
+    }
+    if (!/^[\w-]+$/.test(id)) throw new Error(`会话 ID 不能用于命令行：${id}`); // it is typed into a shell
+    if (!st.cwd) throw new Error('会话记录里没有启动目录，无法在终端恢复');
+    try {
+      await fsp.stat(st.cwd);
+    } catch (e) {
+      if (e.code === 'ENOENT') throw new Error(`启动目录已不存在：${st.cwd}`);
+      throw e;
+    }
+    const title = (st.title || st.firstPrompt || id).replace(/\s+/g, ' ');
+    const t = vscode.window.createTerminal({ name: `Claude · ${title.length > 20 ? title.slice(0, 19) + '…' : title}`, cwd: st.cwd });
+    t.show();
+    t.sendText(`claude --resume ${id}`);
+  }
+
+  /** Requests of the 项目 tab. A failure is shown in the webview, never swallowed. */
+  async projMessage(m) {
+    const reply = (msg) => this.view && this.view.webview.postMessage(msg);
+    const subsOf = (st) => this.subsByMain().get(st.file) || [];
+    try {
+      switch (m.type) {
+        case 'projSave':
+          try {
+            await this.projects.upsert({ id: m.id, name: m.name, folders: m.folders });
+          } catch (e) {
+            reply({ type: 'projSaved', ok: false, error: e.message, missing: e.missing || [] });
+            return;
+          }
+          reply({ type: 'projSaved', ok: true });
+          break;
+        case 'projRemove': {
+          const p = this.projects.byId(m.id);
+          if (!p) throw new Error('项目不存在');
+          const ok = await vscode.window.showWarningMessage(`移除项目「${p.name}」？只取消登记，不会删除目录和会话。`, { modal: true }, '移除');
+          if (ok !== '移除') return;
+          await this.projects.remove(m.id);
+          break;
+        }
+        case 'projSuggest':
+          reply({ type: 'suggest', items: await this.suggestions() });
+          return;
+        case 'projPick': {
+          const uris = await vscode.window.showOpenDialog({ canSelectFolders: true, canSelectFiles: false, canSelectMany: true, openLabel: '添加' });
+          if (uris && uris.length) reply({ type: 'picked', paths: uris.map((u) => u.fsPath) });
+          return;
+        }
+        case 'projNew': {
+          const p = this.projects.byId(m.id);
+          if (!p) throw new Error('项目不存在');
+          const dir = p.paths.length === 1 ? p.paths[0] : await vscode.window.showQuickPick(p.paths, { placeHolder: `在「${p.name}」的哪个目录里新建会话` });
+          if (!dir) return;
+          const t = vscode.window.createTerminal({ name: `Claude · ${p.name}`, cwd: dir });
+          t.show();
+          t.sendText('claude');
+          return;
+        }
+        case 'sessOpen':
+          await this.openSession(this.sessionById(m.id), !!m.terminal);
+          return;
+        case 'sessMove': {
+          const st = this.sessionById(m.id);
+          await this.projects.move(st, subsOf(st), typeof m.project === 'string' ? m.project : '');
+          break;
+        }
+        case 'sessAuto':
+          await this.projects.autoAssign(this.sessionById(m.id));
+          break;
+        case 'sessPin':
+          await this.projects.mark('pins', this.sessionById(m.id), !!m.on);
+          break;
+        case 'sessArchive':
+          await this.projects.mark('archived', this.sessionById(m.id), !!m.on);
+          break;
+        case 'copy':
+          if (typeof m.text === 'string') await vscode.env.clipboard.writeText(m.text);
+          return;
+        default:
+          return;
+      }
+      // Project names and membership show up in the status bar, the 全局洞察 filter and its rankings too.
+      if (this.gProject && this.gProject !== UNASSIGNED && !this.projects.byId(this.gProject)) this.gProject = '';
+      this.updateSession(this.cfg());
+      this.refreshGlobal();
+      this.postProjects(true);
+    } catch (e) {
+      reply({ type: 'toast', text: e.message || String(e) });
+    }
   }
 
   post(msg) {

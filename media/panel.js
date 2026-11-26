@@ -2,13 +2,14 @@
 (function () {
   const vscode = acquireVsCodeApi();
   const app = document.getElementById('app');
-  const ui = Object.assign({ tab: 'session', q: '', sort: 'recent', heat: 'reqs', range: 'week', gran: 'day', year: null, day: null, log: null }, vscode.getState() || {});
+  const ui = Object.assign({ tab: 'session', pq: '', psort: 'recent', pactive: false, pauto: false, parch: false, pcollapsed: {}, pmore: {}, gproj: '', q: '', sort: 'recent', heat: 'reqs', range: 'week', gran: 'day', year: null, day: null, log: null }, vscode.getState() || {});
   // Request log at the bottom of the "模型用量" tab; it keeps its own page and re-attaches after each re-render.
   const log = window.RequestLog(vscode, ui.log, (q) => ((ui.log = q), vscode.setState(ui)), { size: 10, scope: 'all', compact: true, hostRange: true });
   const RANGES = window.CCP_RANGES;
   const isMonthRange = (r) => /^\d{4}-\d{2}$/.test(r);
   const rangeLabel = (k) => (isMonthRange(k) ? k : (RANGES.find((r) => r[0] === k) || [])[1] || '');
   let S = null; // current session stats
+  let P = null; // { projects, sessions, current, range } of the 项目 tab
   let G = null; // { g, daily, cal }
   let cfg = { contextWarn: 0.7, contextAlert: 0.85, cacheWarnMinutes: 10 };
   // Timestamps come from the remote machine's clock; the webview runs on the local one.
@@ -264,7 +265,7 @@
     const t = sumT([s.tokens, s.sub]);
     return `
       <div class="head"><div class="t" title="${esc(s.sessionId)}">${esc(s.title || s.sessionId)}</div>
-        <div class="sub">${esc(modelName(s.model))} · <span class="badge ${s.state.kind}">${STATE[s.state.kind]}${working ? ` <span data-since="${s.state.since}">${dur(now() - s.state.since)}</span>` : ''}</span> <button class="small" data-action="pick" title="${s.pinned ? '状态栏已固定在这个会话；选“自动”可恢复跟随' : '固定状态栏要跟踪的会话'}">${s.pinned ? '已固定 · 切换' : '切换会话'}</button></div></div>
+        <div class="sub">${s.projectName ? esc(s.projectName) + ' · ' : ''}${esc(modelName(s.model))} · <span class="badge ${s.state.kind}">${STATE[s.state.kind]}${working ? ` <span data-since="${s.state.since}">${dur(now() - s.state.since)}</span>` : ''}</span> <button class="small" data-action="pick" title="${s.pinned ? '状态栏已固定在这个会话；选“自动”可恢复跟随' : '固定状态栏要跟踪的会话'}">${s.pinned ? '已固定 · 切换' : '切换会话'}</button></div></div>
       <div class="grid3">
         ${card('速度', `${num(s.speed.latest)}<small>tok/s</small>`, `平均 ${num(s.speed.avg)}`)}
         ${card('缓存命中', pct(s.hit), `<span id="cacheMini">${cacheText(s).replace(/<[^>]+>/g, '')}</span>`, cacheCls)}
@@ -394,16 +395,17 @@
     const t = g.totals;
     return `
       <div class="sub srcnote">本机现存会话记录 · 始于 ${g.since ? new Date(g.since).toLocaleDateString('zh-CN') : '—'}（默认保留 30 天），不含已被 Claude Code 删除的</div>
+      ${G.gproj ? '<div class="note">已按项目筛选。“近 7 天用量”和其他页的历史汇总不分项目，这里不显示。</div>' : ''}
       <div class="grid3">
         ${card('会话', g.sessionCount, `${g.activeSessions} 个活跃（此刻）`)}
         ${card('Token 消耗', tok(t.total), `${t.reqs.toLocaleString()} 次请求`)}
-        ${card('估算费用', usd(t.cost), 'API 价格折算' + (G.cmp[g.range === G.cal.month ? 'month' : g.range] ? '<br>' + delta(G.cmp[g.range === G.cal.month ? 'month' : g.range]) : ''))}
+        ${card('估算费用', usd(t.cost), 'API 价格折算' + (!G.gproj && G.cmp[g.range === G.cal.month ? 'month' : g.range] ? '<br>' + delta(G.cmp[g.range === G.cal.month ? 'month' : g.range]) : ''))}
         ${card('缓存命中率', pct(t.hit), `${tok(t.cr)} 读取`)}
         ${card('工具调用', g.toolCalls.toLocaleString(), `${t.reqs.toLocaleString()} 次模型调用`)}
         ${card('活跃时长', hours(g.activeMs), `${g.sessionCount} 个会话`)}
       </div>
-      <section><h3>近 7 天用量<span>固定 7 天，不随范围 · ${tok(total(rangeTotal((d) => d > daysBefore(G.cal.today, 7) && d <= G.cal.today)))}</span></h3>${last7()}
-        <div class="legend">${TT.map(([, n, c]) => `<span><i style="background:${c}"></i>${n}</span>`).join('')}</div></section>
+      ${G.gproj ? '' : `<section><h3>近 7 天用量<span>固定 7 天，不随范围 · ${tok(total(rangeTotal((d) => d > daysBefore(G.cal.today, 7) && d <= G.cal.today)))}</span></h3>${last7()}
+        <div class="legend">${TT.map(([, n, c]) => `<span><i style="background:${c}"></i>${n}</span>`).join('')}</div></section>`}
       <section><h3>活跃度热力图<span class="seg"><button data-heat="reqs" class="${ui.heat === 'reqs' ? 'on' : ''}">请求数</button><button data-heat="tokens" class="${ui.heat === 'tokens' ? 'on' : ''}">Token</button></span></h3>
         ${heatmap(g.heat[ui.heat])}</section>
       <section><h3>Token 构成<span>${tok(t.total)}</span></h3>${stackBar(t)}</section>
@@ -416,12 +418,18 @@
       ${rank('项目分布', g.projects, (x) => `${tok(x.value)} · ${x.sessions} 会话`, `${g.projects.length} 个项目`)}
       ${rank('技能与斜杠命令', g.skills, (x) => x.value + ' 次', '/ 开头为手动输入的命令')}
       ${rank('工具调用', g.tools, (x) => x.value.toLocaleString() + ' 次')}
-      ${rank('命令执行', g.cmds, (x) => x.value.toLocaleString() + ' 次', '“coke ▸” 为在 coke 上执行')}
+      ${rank('命令执行', g.cmds, (x) => x.value.toLocaleString() + ' 次', '“win-work ▸” 为在 win-work 上执行')}
       <section id="sessList">${sessionList()}</section>
       <div class="note">当前范围：${rangeLabel(g.range)}。数据来自仍保留在本机的 Claude Code 会话记录（最早 ${g.since ? new Date(g.since).toLocaleDateString('zh-CN') : '—'}，默认保留 30 天），更早的只有“每日活动”和“模型用量”里的汇总。</div>`;
   }
+  /** Project filter of 全局洞察; shown once projects exist. */
+  function projectFilter() {
+    if (!P || !P.projects.length) return '';
+    const opts = [['', '全部项目'], ...P.projects.map((p) => [p.id, p.name]), ['-', '未归入项目']];
+    return `<div class="toolbar"><select id="gproj" title="只统计这个项目的会话">${opts.map(([v, n]) => `<option value="${esc(v)}">${esc(n)}</option>`).join('')}</select></div>`;
+  }
   function renderGlobal() {
-    return `${rangeBar()}<div class="toolbar"><input id="q" placeholder="搜索会话标题 / 项目" value="${esc(ui.q)}">
+    return `${rangeBar()}${projectFilter()}<div class="toolbar"><input id="q" placeholder="搜索会话标题 / 项目" value="${esc(ui.q)}">
       <select id="sort"><option value="recent">最近更新</option><option value="tokens">用量</option><option value="cost">费用</option></select>
       <button class="small" data-action="openLog" title="在编辑器中打开全部请求日志">请求日志</button>
       <button class="small" data-action="refresh" title="重新扫描全部会话记录">重新扫描</button></div><div id="gbody">${renderGlobalBody()}</div>`;
@@ -654,8 +662,367 @@
       <section id="logHost"></section>`;
   }
 
+  // ---------- tab: projects
+  const ICO = (d) => `<svg class="ico" viewBox="0 0 16 16">${d}</svg>`;
+  const I = {
+    folder: ICO('<path d="M1.8 4.2c0-.7.5-1.2 1.2-1.2h3l1.4 1.6h5.6c.7 0 1.2.5 1.2 1.2v6c0 .7-.5 1.2-1.2 1.2H3c-.7 0-1.2-.5-1.2-1.2z"/>'),
+    open: ICO('<path d="M1.8 12V4.2c0-.7.5-1.2 1.2-1.2h3l1.4 1.6h5.6c.7 0 1.2.5 1.2 1.2v1.2"/><path d="M1.8 12l1.6-4.4c.2-.5.6-.8 1.1-.8h9.2c.8 0 1.3.8 1 1.5L12.9 12c-.2.6-.7 1-1.3 1H3c-.7 0-1.2-.5-1.2-1z"/>'),
+    inbox: ICO('<path d="M2 9.5h3.2l1 1.6h3.6l1-1.6H14"/><path d="M3.6 3.5h8.8L14 9.5v3c0 .6-.4 1-1 1H3c-.6 0-1-.4-1-1v-3z"/>'),
+    more: ICO('<circle cx="8" cy="3.5" r=".6"/><circle cx="8" cy="8" r=".6"/><circle cx="8" cy="12.5" r=".6"/>'),
+    plus: ICO('<path d="M8 3.5v9M3.5 8h9"/>'),
+    copy: ICO('<rect x="5.5" y="5.5" width="8" height="8" rx="1.2"/><path d="M10.5 3.5v-.3c0-.7-.5-1.2-1.2-1.2H3.7c-.7 0-1.2.5-1.2 1.2v5.6c0 .7.5 1.2 1.2 1.2h.3"/>'),
+    pin: ICO('<path d="M9.5 2.5l4 4-2 .8-1.8 1.8.3 2.4-.9.9-2.4-2.4L3 13.5M6.2 5.5l.8-2 2.5-1"/>'),
+    filter: ICO('<path d="M2 3.5h12M4.5 8h7M6.5 12.5h3"/>'),
+    newproj: ICO('<path d="M1.8 4.2c0-.7.5-1.2 1.2-1.2h3l1.4 1.6h5.6c.7 0 1.2.5 1.2 1.2v6c0 .7-.5 1.2-1.2 1.2H3c-.7 0-1.2-.5-1.2-1.2z"/><path d="M8 7v3.4M6.3 8.7h3.4"/>'),
+    check: ICO('<path d="M3.5 8.5l3 3 6-6.5"/>'),
+  };
+  const brief = (ts) => {
+    const m = Math.round((now() - ts) / 60000);
+    return m < 1 ? '刚刚' : m < 60 ? m + 'm' : m < 1440 ? Math.round(m / 60) + 'h' : Math.round(m / 1440) + 'd';
+  };
+  const RUNNING = (s) => s.state === 'generating' || s.state === 'tool';
+  const PLIMIT = 5; // sessions shown per project before "查看全部"
+  const ULIMIT = 8; // same for the sessions that belong to no project
+  const HOW = { manual: '手动归类', cwd: '按启动目录归类', content: '按操作过的文件归类' };
+  const filterOn = () => ui.psort !== 'recent' || ui.pactive || ui.pauto || ui.parch;
+  const isOpen = (key) => !!ui.pq.trim() || !ui.pcollapsed[key];
+  const baseName = (p) => p.replace(/[\\/]+$/, '').split(/[\\/]/).pop();
+  let suggest = null; // [{ path, name, sessions }] folders found in the sessions, offered for new projects; null until asked
+  const askSuggest = () => vscode.postMessage({ type: 'projSuggest' });
+
+  function sessRow(s) {
+    const tip = [s.title, s.how ? HOW[s.how] : '未归入项目', s.cost ? `${rangeLabel(P.range)}费用 ${usd(s.cost)}` : '', s.id].filter(Boolean).join('\n');
+    return `<div class="srow${s.id === P.current ? ' cur' : ''}" draggable="true" data-sid="${s.id}" data-drop="${s.project || ''}" title="${esc(tip)}">
+      ${RUNNING(s) ? '<i class="rdot" title="运行中"></i>' : ''}
+      <span class="ti">${esc(s.title)}</span>
+      <span class="sact"><button class="ib" data-copyid="${s.id}" title="复制会话 ID">${I.copy}</button><button class="ib" data-smenu="${s.id}" title="更多操作">${I.more}</button></span>
+      <span class="ag">${brief(s.last)}</span></div>`;
+  }
+  function sessRows(items, key, limit) {
+    const all = !!ui.pq.trim() || !!ui.pmore[key];
+    const rows = (all ? items : items.slice(0, limit)).map(sessRow).join('');
+    return rows + (items.length > limit && !ui.pq.trim() ? `<div class="pmore" data-more="${key}">${ui.pmore[key] ? '收起' : `查看全部（${items.length}）`}</div>` : '');
+  }
+  /** A foldable group header: a project, 置顶 or 未归入项目. `drop` makes it a drop target for moving sessions. */
+  function groupHead({ key, drop, icon, name, count, cost, tip, actions }) {
+    return `<div class="proj" data-fold="${key}"${drop === undefined ? '' : ` data-drop="${drop}"`} title="${esc(tip)}">${icon}<span class="pn">${esc(name)}</span>
+      <span class="pc">${count}</span>${cost ? `<span class="pcost">${usd(cost)}</span>` : ''}${actions ? `<span class="pact">${actions}</span>` : ''}</div>`;
+  }
+  function intro() {
+    if (suggest === null) {
+      suggest = [];
+      askSuggest();
+    }
+    const rows = suggest
+      .map((x, i) => `<div class="sugrow" title="${esc(x.path)}">${I.folder}<span class="pn">${esc(x.name)}</span><span class="pc">${x.sessions} 个会话</span><button class="small" data-sugadd="${i}">添加</button></div>`)
+      .join('');
+    return `<div class="pintro"><p>会话按项目自动归类：在项目目录里启动的归入该项目；在上级目录（如整个工作区）启动的，看它读写过哪个项目的文件。归错的可以拖到别的项目，或用「⋯ → 移动到」。</p>
+      ${rows ? `<div class="pcap">从会话里发现的目录，点添加即建为项目</div>${rows}` : ''}
+      <div class="dbtns"><button class="small go" data-pact="new">新建项目…</button></div></div>`;
+  }
+  function renderPlist() {
+    if (!P) return '<div class="empty">正在扫描会话记录…</div>';
+    const q = ui.pq.trim().toLowerCase();
+    const nameOf = new Map(P.projects.map((p) => [p.id, p.name]));
+    const list = P.sessions
+      .filter((s) => (ui.pauto || !s.auto) && s.archived === !!ui.parch && (!ui.pactive || RUNNING(s)) && (!q || `${s.title} ${s.id} ${nameOf.get(s.project) || ''}`.toLowerCase().includes(q)))
+      .sort((a, b) => (ui.psort === 'created' ? b.created - a.created : b.last - a.last));
+    const narrowed = !!q || ui.pactive || ui.parch;
+    let out = !P.projects.length && !narrowed ? intro() : '';
+    if (!list.length) return out + `<div class="empty">${narrowed ? '没有匹配的会话' : '还没有会话'}</div>`;
+    const pinned = list.filter((s) => s.pinned);
+    if (pinned.length) {
+      out += groupHead({ key: 'pin', icon: I.pin, name: '置顶', count: pinned.length, tip: '置顶的会话，不论属于哪个项目' });
+      if (isOpen('pin')) out += pinned.map(sessRow).join('');
+    }
+    const by = new Map([['', []], ...P.projects.map((p) => [p.id, []])]);
+    for (const s of list) if (!s.pinned) by.get(s.project || '').push(s);
+    const countOf = (id) => list.filter((s) => (s.project || '') === id).length;
+    for (const p of P.projects) {
+      const items = by.get(p.id);
+      if (narrowed && !countOf(p.id)) continue;
+      const cost = P.sessions.reduce((a, s) => a + (s.project === p.id ? s.cost : 0), 0);
+      out += groupHead({
+        key: p.id,
+        drop: p.id,
+        icon: isOpen(p.id) ? I.open : I.folder,
+        name: p.name,
+        count: countOf(p.id),
+        cost,
+        tip: `${p.paths.join('\n')}\n${rangeLabel(P.range)}费用 ${usd(cost)}`,
+        actions: `<button class="ib" data-pmenu="${p.id}" title="项目操作">${I.more}</button><button class="ib" data-pnew="${p.id}" title="在项目目录的终端里新建会话">${I.plus}</button>`,
+      });
+      if (!isOpen(p.id)) continue;
+      out += items.length ? sessRows(items, p.id, PLIMIT) : `<div class="pempty" data-drop="${p.id}">${countOf(p.id) ? '会话都已置顶' : '还没有会话，可以把会话拖到这里'}</div>`;
+    }
+    const none = by.get('');
+    if (none.length || P.projects.length) {
+      out += groupHead({ key: 'none', drop: '', icon: I.inbox, name: '未归入项目', count: countOf(''), tip: '没有落在任何项目里的会话；拖到这里可取消手动归类' });
+      if (isOpen('none')) out += sessRows(none, 'none', ULIMIT);
+    }
+    return out;
+  }
+  function renderProjects() {
+    return `<div class="phead"><span>项目</span><span class="ptools"><button class="ib${filterOn() ? ' on' : ''}" data-pact="filter" title="排序与筛选">${I.filter}</button><button class="ib" data-pact="new" title="新建项目">${I.newproj}</button></span></div>
+      <div class="toolbar"><input id="pq" placeholder="搜索会话标题 / 项目" value="${esc(ui.pq)}"></div>${ui.parch ? '<div class="pfnote">正在看已归档的会话 <button class="small" data-pact="unarch">返回</button></div>' : ''}<div id="plist">${renderPlist()}</div>`;
+  }
+  function updateList() {
+    const el = document.getElementById('plist');
+    if (el) el.innerHTML = renderPlist();
+    const f = document.querySelector('[data-pact="filter"]');
+    if (f) f.classList.toggle('on', filterOn());
+  }
+  /** Switches to 全局洞察 restricted to one project (or all with ''). */
+  function showUsage(id) {
+    ui.gproj = id;
+    ui.tab = 'global';
+    save();
+    vscode.postMessage({ type: 'gproj', project: id });
+    render();
+  }
+
+  // Floating menu: the items are { label, check, run }, { label, header: true } or 'sep'; it closes after one pick, on an outside click or on scroll.
+  const menuEl = document.createElement('div');
+  menuEl.id = 'menu';
+  menuEl.hidden = true;
+  document.body.appendChild(menuEl);
+  let menuItems = [];
+  function closeMenu() {
+    menuEl.hidden = true;
+  }
+  function openMenu(btn, items) {
+    menuItems = items;
+    menuEl.innerHTML = items
+      .map((it, i) => (it === 'sep' ? '<div class="msep"></div>' : it.header ? `<div class="mh">${esc(it.label)}</div>` : `<div class="mi" data-mi="${i}"><span class="ck">${it.check ? I.check : ''}</span>${esc(it.label)}</div>`))
+      .join('');
+    menuEl.hidden = false;
+    const r = btn.getBoundingClientRect();
+    const w = menuEl.offsetWidth;
+    const h = menuEl.offsetHeight;
+    menuEl.style.left = Math.max(4, Math.min(r.right - w, window.innerWidth - w - 4)) + 'px';
+    menuEl.style.top = (r.bottom + 4 + h > window.innerHeight ? Math.max(4, r.top - h - 4) : r.bottom + 4) + 'px';
+  }
+  menuEl.addEventListener('click', (e) => {
+    const el = e.target.closest('[data-mi]');
+    if (!el) return;
+    const it = menuItems[Number(el.dataset.mi)];
+    closeMenu();
+    it.run();
+  });
+  document.addEventListener('click', (e) => {
+    if (!menuEl.contains(e.target) && !e.target.closest('[data-pmenu],[data-smenu],[data-pact="filter"]')) closeMenu();
+  });
+  window.addEventListener('scroll', closeMenu, true);
+
+  const toastEl = document.createElement('div');
+  toastEl.id = 'toast';
+  toastEl.hidden = true;
+  document.body.appendChild(toastEl);
+  let toastTimer = null;
+  function toast(text) {
+    toastEl.textContent = text;
+    toastEl.hidden = false;
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => (toastEl.hidden = true), 2500);
+  }
+  function copyText(text, msg) {
+    vscode.postMessage({ type: 'copy', text });
+    toast(msg);
+  }
+
+  // New / edit project dialog. The folders are only checked by the extension when saved; a missing folder comes
+  // back as an error with a button that marks the missing ones to be created and saves again.
+  const dlg = document.createElement('div');
+  dlg.id = 'dlgmask';
+  dlg.hidden = true;
+  dlg.innerHTML = `<div class="dlg"><h3 id="dtitle"></h3>
+    <label>项目名称</label><input id="dname" placeholder="默认取第一个目录的名字">
+    <label>目录（可添加多个）</label><div id="dchips"></div>
+    <div class="addrow"><input id="dpath" placeholder="输入绝对路径，回车添加"><button class="small" data-dact="add">添加</button><button class="small" data-dact="browse" title="用目录选择框添加">浏览…</button></div>
+    <div id="dsugg"></div>
+    <div class="derr" id="derr"></div>
+    <div class="dbtns"><button class="small" data-dact="cancel">取消</button><button class="small go" id="dsave" data-dact="save">保存</button></div></div>`;
+  document.body.appendChild(dlg);
+  let dlgState = null; // { id, folders: [{ path, create }], missing: [path] }
+  const $d = (id) => document.getElementById(id);
+  function dlgRender() {
+    $d('dchips').innerHTML = dlgState.folders
+      .map((f, i) => `<div class="chip"><span title="${esc(f.path)}">${esc(f.path)}</span>${f.create ? '<em>将新建</em>' : ''}<button class="ib" data-rm="${i}" title="移除">&times;</button></div>`)
+      .join('');
+    const offer = (suggest || []).map((x, i) => [x, i]).filter(([x]) => !dlgState.folders.some((f) => f.path === x.path));
+    $d('dsugg').innerHTML = offer.length
+      ? `<label>建议（从会话里发现的目录）</label><div class="sugg">${offer.map(([x, i]) => `<button class="small" data-sug="${i}" title="${esc(x.path)}">${esc(x.name)} <span class="pc">${x.sessions}</span></button>`).join('')}</div>`
+      : '';
+  }
+  function addFolder(p) {
+    if (!dlgState.folders.some((f) => f.path === p)) dlgState.folders.push({ path: p, create: false });
+    if (!$d('dname').value.trim()) $d('dname').value = baseName(p);
+    dlgRender();
+  }
+  function openDlg(p) {
+    dlgState = { id: p ? p.id : null, folders: p ? p.paths.map((x) => ({ path: x, create: false })) : [] };
+    $d('dtitle').textContent = p ? '编辑项目' : '新建项目';
+    $d('dname').value = p ? p.name : '';
+    $d('dpath').value = '';
+    $d('derr').textContent = '';
+    $d('dsave').disabled = false;
+    askSuggest(); // the folders already registered drop out of the list
+    dlgRender();
+    dlg.hidden = false;
+    $d(p ? 'dname' : 'dpath').focus();
+  }
+  function closeDlg() {
+    dlg.hidden = true;
+    dlgState = null;
+  }
+  function addTyped() {
+    const v = $d('dpath').value.trim();
+    if (!v) return;
+    $d('dpath').value = '';
+    addFolder(v);
+  }
+  function saveDlg() {
+    addTyped();
+    const first = dlgState.folders[0];
+    if (!$d('dname').value.trim() && first) $d('dname').value = baseName(first.path);
+    $d('derr').textContent = '';
+    $d('dsave').disabled = true;
+    vscode.postMessage({ type: 'projSave', id: dlgState.id, name: $d('dname').value, folders: dlgState.folders });
+  }
+  dlg.addEventListener('click', (e) => {
+    const rm = e.target.closest('[data-rm]');
+    const sug = e.target.closest('[data-sug]');
+    const act = e.target.closest('[data-dact]');
+    if (rm) {
+      dlgState.folders.splice(Number(rm.dataset.rm), 1);
+      dlgRender();
+    } else if (sug) addFolder(suggest[Number(sug.dataset.sug)].path);
+    else if (e.target === dlg) closeDlg();
+    else if (!act) return;
+    else if (act.dataset.dact === 'cancel') closeDlg();
+    else if (act.dataset.dact === 'add') addTyped();
+    else if (act.dataset.dact === 'browse') vscode.postMessage({ type: 'projPick' });
+    else if (act.dataset.dact === 'save') saveDlg();
+    else if (act.dataset.dact === 'create') {
+      for (const f of dlgState.folders) if (dlgState.missing.includes(f.path.trim())) f.create = true;
+      dlgRender();
+      saveDlg();
+    }
+  });
+  dlg.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') closeDlg();
+    else if (e.key === 'Enter' && e.target.id === 'dpath') {
+      e.preventDefault();
+      addTyped();
+    } else if (e.key === 'Enter' && e.target.id === 'dname') {
+      e.preventDefault();
+      saveDlg();
+    }
+  });
+
+  const sessMsg = (type, s, extra) => vscode.postMessage({ type, id: s.id, ...extra });
+  app.addEventListener('click', (e) => {
+    const t = e.target;
+    const at = (sel) => t.closest(sel);
+    let el;
+    if ((el = at('[data-pact]'))) {
+      const act = el.dataset.pact;
+      if (act === 'new') return openDlg(null);
+      if (act === 'unarch') {
+        ui.parch = false;
+        save();
+        return render();
+      }
+      const set = (k, v) => () => ((ui[k] = v), save(), render());
+      openMenu(el, [
+        { label: '按最近活动排序', check: ui.psort === 'recent', run: set('psort', 'recent') },
+        { label: '按创建时间排序', check: ui.psort === 'created', run: set('psort', 'created') },
+        'sep',
+        { label: '只看进行中的会话', check: ui.pactive, run: set('pactive', !ui.pactive) },
+        { label: '显示自动化会话（SDK、临时目录）', check: ui.pauto, run: set('pauto', !ui.pauto) },
+        { label: '只看已归档的会话', check: ui.parch, run: set('parch', !ui.parch) },
+      ]);
+    } else if ((el = at('[data-pmenu]'))) {
+      const p = P.projects.find((x) => x.id === el.dataset.pmenu);
+      openMenu(el, [
+        { label: '编辑项目（名称、目录）', run: () => openDlg(p) },
+        { label: '查看用量（全局洞察）', run: () => showUsage(p.id) },
+        'sep',
+        { label: '移除项目', run: () => vscode.postMessage({ type: 'projRemove', id: p.id }) },
+      ]);
+    } else if ((el = at('[data-pnew]'))) vscode.postMessage({ type: 'projNew', id: el.dataset.pnew });
+    else if ((el = at('[data-sugadd]'))) {
+      const x = suggest[Number(el.dataset.sugadd)];
+      vscode.postMessage({ type: 'projSave', id: null, name: x.name, folders: [{ path: x.path }] });
+    } else if ((el = at('[data-copyid]'))) copyText(el.dataset.copyid, '已复制会话 ID');
+    else if ((el = at('[data-smenu]'))) {
+      const s = P.sessions.find((x) => x.id === el.dataset.smenu);
+      const cur = s.project || '';
+      const move = (to) => () => sessMsg('sessMove', s, { project: to });
+      openMenu(el, [
+        { label: '在终端中恢复（claude --resume）', run: () => sessMsg('sessOpen', s, { terminal: true }) },
+        { label: s.pinned ? '取消置顶' : '置顶', run: () => sessMsg('sessPin', s, { on: !s.pinned }) },
+        { label: s.archived ? '取消归档' : '归档（从列表隐藏）', run: () => sessMsg('sessArchive', s, { on: !s.archived }) },
+        'sep',
+        { label: '移动到', header: true },
+        ...P.projects.map((p) => ({ label: p.name, check: cur === p.id, run: move(p.id) })),
+        { label: '未归入项目', check: cur === '', run: move('') },
+        ...(s.how === 'manual' ? [{ label: '恢复自动归类', run: () => sessMsg('sessAuto', s) }] : []),
+        'sep',
+        { label: '复制标题', run: () => copyText(s.title, '已复制标题') },
+      ]);
+    } else if ((el = at('[data-more]'))) {
+      ui.pmore[el.dataset.more] = !ui.pmore[el.dataset.more];
+      save();
+      updateList();
+    } else if ((el = at('[data-fold]'))) {
+      ui.pcollapsed[el.dataset.fold] = !ui.pcollapsed[el.dataset.fold];
+      save();
+      updateList();
+    } else if ((el = at('[data-sid]'))) vscode.postMessage({ type: 'sessOpen', id: el.dataset.sid });
+  });
+
+  // Drag a session onto a project (or onto its rows, or "未归入项目") to move it there.
+  let overEl = null;
+  const clearOver = () => {
+    if (overEl) overEl.classList.remove('over');
+    overEl = null;
+  };
+  app.addEventListener('dragstart', (e) => {
+    const r = e.target.closest && e.target.closest('[data-sid]');
+    if (!r) return;
+    e.dataTransfer.setData('text/plain', r.dataset.sid);
+    e.dataTransfer.effectAllowed = 'move';
+    document.getElementById('plist').classList.add('dragging');
+    closeMenu();
+  });
+  app.addEventListener('dragend', () => {
+    clearOver();
+    const l = document.getElementById('plist');
+    if (l) l.classList.remove('dragging');
+  });
+  app.addEventListener('dragover', (e) => {
+    const el = e.target.closest('[data-drop]');
+    if (!el) return clearOver();
+    e.preventDefault();
+    if (el !== overEl) {
+      clearOver();
+      overEl = el;
+      el.classList.add('over');
+    }
+  });
+  app.addEventListener('drop', (e) => {
+    const el = e.target.closest('[data-drop]');
+    clearOver();
+    const id = e.dataTransfer.getData('text/plain');
+    if (!el || !id) return;
+    e.preventDefault();
+    vscode.postMessage({ type: 'sessMove', id, project: el.dataset.drop });
+  });
+
   // ---------- render loop
   const TABS = [
+    ['projects', '项目', renderProjects],
     ['session', '当前会话', renderSession],
     ['global', '全局洞察', renderGlobal],
     ['days', '每日活动', renderDays],
@@ -668,6 +1035,8 @@
     app.innerHTML = `<div class="tabs">${TABS.map(([k, n]) => `<button data-tab="${k}" class="${k === tab[0] ? 'on' : ''}">${n}</button>`).join('')}</div>${tab[2]()}`;
     const sort = document.getElementById('sort');
     if (sort) sort.value = ui.sort;
+    const gp = document.getElementById('gproj');
+    if (gp) gp.value = ui.gproj;
     const cal = document.getElementById('calScroll');
     if (cal) cal.scrollLeft = cal.scrollWidth;
     const host = document.getElementById('logHost');
@@ -675,6 +1044,15 @@
   }
   /** Re-render only what changed without stealing focus from the search box. */
   function refresh(kind) {
+    if (ui.tab === 'projects') {
+      if (kind === 'projects') updateList();
+      return;
+    }
+    if (kind === 'projects') {
+      // The project filter of 全局洞察 appears once the project list has arrived.
+      if (ui.tab === 'global' && P.projects.length && !document.getElementById('gproj')) render();
+      return;
+    }
     if (ui.tab === 'global') {
       if (kind === 'global') {
         const body = document.getElementById('gbody');
@@ -714,6 +1092,12 @@
   });
   app.addEventListener('mouseleave', hideTip);
   app.addEventListener('input', (e) => {
+    if (e.target.id === 'pq') {
+      ui.pq = e.target.value;
+      save();
+      updateList();
+      return;
+    }
     if (e.target.id !== 'q') return;
     ui.q = e.target.value;
     save();
@@ -721,6 +1105,12 @@
     if (list && G) list.innerHTML = sessionList();
   });
   app.addEventListener('change', (e) => {
+    if (e.target.id === 'gproj') {
+      ui.gproj = e.target.value;
+      save();
+      vscode.postMessage({ type: 'gproj', project: ui.gproj });
+      return;
+    }
     if (e.target.id !== 'sort') return;
     ui.sort = e.target.value;
     save();
@@ -733,18 +1123,51 @@
       log.onMessage(data);
       return;
     }
+    if (data.type === 'toast') return toast(data.text);
+    if (data.type === 'picked') {
+      if (dlgState) {
+        for (const p of data.paths) if (!dlgState.folders.some((f) => f.path === p)) dlgState.folders.push({ path: p, create: false });
+        dlgChips();
+      }
+      return;
+    }
+    if (data.type === 'suggest') {
+      suggest = data.items;
+      if (dlgState) dlgRender();
+      if (ui.tab === 'projects') updateList();
+      return;
+    }
+    if (data.type === 'projSaved') {
+      if (data.ok) {
+        closeDlg();
+        askSuggest();
+      } else if (!dlgState) toast(data.error); // a suggested folder added straight from the list
+      else {
+        dlgState.missing = data.missing;
+        $d('derr').innerHTML = esc(data.error) + (data.missing.length ? ' <button class="small" data-dact="create">创建这些目录并保存</button>' : '');
+        $d('dsave').disabled = false;
+      }
+      return;
+    }
     skew = data.now - Date.now();
-    if (data.type === 'session') {
+    if (data.type === 'projects') P = data;
+    else if (data.type === 'session') {
       S = data.s;
       cfg = data.cfg;
     } else if (data.type === 'global') {
-      G = { g: data.g, daily: data.daily, hourly: data.hourly, cal: data.cal, cmp: data.cmp || {} };
+      G = { g: data.g, gproj: data.gproj, daily: data.daily, hourly: data.hourly, cal: data.cal, cmp: data.cmp || {} };
+      if (ui.gproj !== data.gproj) {
+        ui.gproj = data.gproj; // the extension drops a filter whose project was removed
+        save();
+      }
     }
     refresh(data.type);
   });
 
   // Countdowns tick locally between updates.
+  let tickN = 0;
   setInterval(() => {
+    if (++tickN % 30 === 0 && ui.tab === 'projects' && menuEl.hidden && !document.getElementById('plist')?.classList.contains('dragging')) updateList();
     for (const el of document.querySelectorAll('[data-since]')) el.textContent = dur(now() - Number(el.dataset.since));
     for (const el of document.querySelectorAll('[data-expire]')) {
       const left = Number(el.dataset.expire) - now();
@@ -758,6 +1181,6 @@
 
   render();
   log.setRange(ui.range);
-  vscode.postMessage({ type: 'ready', range: ui.range });
+  vscode.postMessage({ type: 'ready', range: ui.range, gproj: ui.gproj });
   log.start();
 })();
