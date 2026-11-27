@@ -8,6 +8,7 @@ const core = require('./core');
 const stats = require('./stats');
 const { History } = require('./history');
 const { Projects, isWithin } = require('./projects');
+const { Quota } = require('./quota');
 
 // The transcript directory is listed (new sessions, deleted files) and global stats are recomputed every Nth poll.
 const RESCAN_EVERY = 10;
@@ -15,6 +16,11 @@ const RESCAN_EVERY = 10;
 const FLASH_MS = 8000;
 // A request that rewrote at least this many tokens with less than half served from cache rebuilt the cache.
 const CACHE_MISS_TOKENS = 20000;
+// Subscription quota: queried at most this often, and only while some transcript was written this recently.
+// The usage endpoint is rate limited, so this stays well above the transcript poll.
+const QUOTA_EVERY_MS = 5 * 60000;
+const QUOTA_ACTIVE_MS = 5 * 60000;
+const QUOTA_TICK_MS = 30000;
 
 function fmtTok(n) {
   if (n == null) return '—';
@@ -67,6 +73,14 @@ function modelName(id) {
 function fmtAgo(ms) {
   const m = Math.max(0, Math.round(ms / 60000));
   return m < 1 ? '刚刚' : m < 60 ? m + ' 分钟前' : m < 1440 ? Math.round(m / 60) + ' 小时前' : Math.round(m / 1440) + ' 天前';
+}
+/** Time left until a quota reset, to the minute so an open hover card does not change every second. */
+function fmtLeft(ms) {
+  const m = Math.max(0, Math.ceil(ms / 60000));
+  if (m < 60) return m + ' 分钟';
+  const h = Math.floor(m / 60);
+  if (h < 24) return h + 'h' + String(m % 60).padStart(2, '0') + 'm';
+  return Math.floor(h / 24) + '天' + (h % 24) + 'h';
 }
 function md(lines) {
   const m = new vscode.MarkdownString(lines.join('\n'));
@@ -127,7 +141,10 @@ class Pulse {
       context.subscriptions.push(it);
       return it;
     };
-    this.items = { state: mk(103), tokens: mk(102), ctx: mk(101), today: mk(100) };
+    this.items = { state: mk(103), tokens: mk(102), ctx: mk(101), today: mk(100), quota: mk(99) };
+    this.items.quota.command = 'ccPulse.refreshQuota';
+    this.quota = new Quota(context.globalStorageUri.fsPath);
+    this.quotaBusy = false;
 
     this.view = null;
     this.logPanel = null;
@@ -138,6 +155,7 @@ class Pulse {
       vscode.commands.registerCommand('ccPulse.refresh', () => this.fullRescan()),
       vscode.commands.registerCommand('ccPulse.openLog', () => this.openLog()),
       vscode.commands.registerCommand('ccPulse.pickSession', () => this.pickSession()),
+      vscode.commands.registerCommand('ccPulse.refreshQuota', () => this.quotaTick(true)),
       vscode.window.tabGroups.onDidChangeTabs((e) => this.onTabChange(e)),
       vscode.window.tabGroups.onDidChangeTabGroups(() => this.onTabChange()),
       vscode.workspace.onDidChangeConfiguration((e) => {
@@ -146,7 +164,7 @@ class Pulse {
         this.tick = 0; // recompute everything with the new settings on the next poll
         this.poll();
       }),
-      { dispose: () => (clearInterval(this.timer), clearInterval(this.uiTimer)) },
+      { dispose: () => (clearInterval(this.timer), clearInterval(this.uiTimer), clearInterval(this.quotaTimer)) },
     );
     this.uiTimer = setInterval(() => this.renderStatus(), 1000);
     this.start();
@@ -162,6 +180,8 @@ class Pulse {
     }
     this.restartTimer();
     this.poll();
+    this.quotaTimer = setInterval(() => this.quotaTick(), QUOTA_TICK_MS);
+    this.quotaTick();
   }
 
   cfg() {
@@ -180,6 +200,9 @@ class Pulse {
       followTab: c.get('followTab'),
       notifyContext: c.get('notifyContext'),
       notifyCache: c.get('notifyCache'),
+      showQuota: c.get('showQuota'),
+      quotaWarn: c.get('quotaWarn'),
+      quotaAlert: c.get('quotaAlert'),
     };
   }
 
@@ -518,7 +541,108 @@ class Pulse {
     item[prop] = value;
   }
 
+  /** Newest write to any transcript, i.e. the last time Claude Code was used on this machine. */
+  lastActivity() {
+    let t = 0;
+    for (const st of this.states.values()) if (st.mtimeMs > t) t = st.mtimeMs;
+    return t;
+  }
+
+  /**
+   * Keeps the quota current without hammering the usage endpoint:
+   *  - at start, unless another window queried it within QUOTA_EVERY_MS;
+   *  - every QUOTA_EVERY_MS while transcripts are being written (the quota only moves when Claude is used,
+   *    though use on other devices is only seen at the next activity here or a click);
+   *  - once a window's reset time has passed, since the shown share is then out of date;
+   *  - on a click on the status bar item (`force`).
+   * Otherwise it only picks up what another window has queried.
+   */
+  async quotaTick(force = false) {
+    if (!this.cfg().showQuota || this.quotaBusy) return;
+    const now = Date.now();
+    const last = this.quota.last;
+    let notBefore = null; // a shared result older than this is queried again
+    if (force) notBefore = now;
+    else if (!last) notBefore = now - QUOTA_EVERY_MS;
+    else {
+      const passed = last.data ? [last.data.fiveHour, last.data.sevenDay].filter((w) => w && w.resetsAt > last.at && w.resetsAt <= now).map((w) => w.resetsAt) : [];
+      if (passed.length) notBefore = Math.max(...passed);
+      else if (now - this.lastActivity() < QUOTA_ACTIVE_MS) notBefore = now - QUOTA_EVERY_MS;
+    }
+    this.quotaBusy = true;
+    try {
+      if (notBefore === null) {
+        const shared = await this.quota.read();
+        if (shared) this.quota.last = shared;
+      } else {
+        this.quotaFetching = true;
+        this.renderQuota();
+        await this.quota.refresh(notBefore, now);
+      }
+    } catch (e) {
+      this.showError(e);
+    } finally {
+      this.quotaBusy = false;
+      this.quotaFetching = false;
+      this.renderQuota();
+    }
+  }
+
+  renderQuota() {
+    const it = this.items.quota;
+    const cfg = this.cfg();
+    if (!cfg.showQuota) {
+      if (it._shown !== false) (it.hide(), (it._shown = false));
+      return;
+    }
+    const now = Date.now();
+    const r = this.quota.last;
+    const icon = this.quotaFetching ? '$(sync~spin)' : '$(dashboard)';
+    const note = '数据来自官方 `claude` CLI 的实验性接口（`get_usage`），CLI 升级后可能失效。有会话活动时每 5 分钟刷新，到重置时间也会刷新。';
+    let bg;
+    if (!r) {
+      this.put(it, 'text', `${icon} 额度`);
+      this.put(it, 'tooltip', md(['**订阅额度** · 正在查询…', '', note]));
+    } else if (r.error) {
+      this.put(it, 'text', `${icon} 额度 $(warning)`);
+      this.put(it, 'tooltip', md([
+        '**订阅额度** · 查询失败',
+        '',
+        r.error.replace(/[\n|]/g, ' '),
+        '',
+        `${fmtAgo(now - r.at)}查询 · 点击重试`,
+        '',
+        note,
+      ]));
+    } else {
+      const d = r.data;
+      const pctOf = (w) => (w ? Math.round(w.pct * 100) + '%' : '—');
+      this.put(it, 'text', `${icon} 5h ${pctOf(d.fiveHour)} · 周 ${pctOf(d.sevenDay)}`);
+      const top = Math.max(...[d.fiveHour, d.sevenDay].filter(Boolean).map((w) => w.pct));
+      if (top >= cfg.quotaAlert) bg = new vscode.ThemeColor('statusBarItem.errorBackground');
+      else if (top >= cfg.quotaWarn) bg = new vscode.ThemeColor('statusBarItem.warningBackground');
+      const when = new Intl.DateTimeFormat('zh-CN', { timeZone: cfg.timeZone || undefined, month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
+      const row = (name, w) =>
+        w ? `| ${name} | ${pctOf(w)} | ${when.format(w.resetsAt)}（${w.resetsAt > now ? '还剩 ' + fmtLeft(w.resetsAt - now) : '已重置，等待刷新'}） |` : `| ${name} | — | — |`;
+      this.put(it, 'tooltip', md([
+        `**订阅额度**${d.plan ? ' · ' + d.plan[0].toUpperCase() + d.plan.slice(1) : ''}`,
+        '',
+        '| | 已用 | 重置时间 |',
+        '|---|---:|---|',
+        row('5 小时', d.fiveHour),
+        row('7 天', d.sevenDay),
+        '',
+        `${fmtAgo(now - r.at)}更新 · 点击立即刷新`,
+        '',
+        note,
+      ]));
+    }
+    this.put(it, 'backgroundColor', bg);
+    if (!it._shown) (it.show(), (it._shown = true));
+  }
+
   renderStatus() {
+    this.renderQuota();
     const s = this.session;
     const it = this.items;
     if (!s) {

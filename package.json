@@ -2,7 +2,7 @@
   "name": "cc-pulse",
   "displayName": "CC Pulse",
   "description": "Claude Code 会话仪表盘：速率、Token、缓存倒计时、上下文、全局洞察与历史用量（只读本地会话记录）",
-  "version": "0.13.0",
+  "version": "0.14.0",
   "publisher": "local",
   "license": "MIT",
   "engines": {
@@ -50,6 +50,10 @@
       {
         "command": "ccPulse.pickSession",
         "title": "CC Pulse: 切换会话"
+      },
+      {
+        "command": "ccPulse.refreshQuota",
+        "title": "CC Pulse: 刷新订阅额度"
       }
     ],
     "configuration": {
@@ -106,6 +110,25 @@
           "type": "boolean",
           "default": true,
           "description": "在状态栏显示今日用量（全部会话的 Token 和估算费用）。"
+        },
+        "ccPulse.showQuota": {
+          "type": "boolean",
+          "default": true,
+          "description": "在状态栏显示订阅额度（5 小时和 7 天已用比例）。数据由本机官方 claude CLI 查询，需要用 Pro / Max 订阅登录。"
+        },
+        "ccPulse.quotaWarn": {
+          "type": "number",
+          "default": 0.7,
+          "minimum": 0,
+          "maximum": 1,
+          "description": "5 小时或 7 天额度用到该比例时状态栏变黄。"
+        },
+        "ccPulse.quotaAlert": {
+          "type": "number",
+          "default": 0.9,
+          "minimum": 0,
+          "maximum": 1,
+          "description": "5 小时或 7 天额度用到该比例时状态栏变红。"
         },
         "ccPulse.notifyContext": {
           "type": "boolean",
